@@ -1,0 +1,11 @@
+{
+  "name": "Insta News Studio — ニュースから今日の投稿をつくる",
+  "short_name": "News Studio",
+  "description": "ニュースに自分の言葉を添えてInstagram投稿素材をつくるアプリ",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f5ef",
+  "theme_color": "#184f3b",
+  "lang": "ja",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
