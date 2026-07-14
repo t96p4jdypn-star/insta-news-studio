@@ -5,7 +5,7 @@ import { createFavoriteCategory, createInitialFavoriteCategories, deleteFavorite
 import { composeCaption, createCaptionBlocks, polishCaptionBlocks, reorderCaptionBlocks, shortenCaptionBlocks } from "../src/lib/composer.ts";
 import { createManualNewsItem } from "../src/services/news/manual.ts";
 import { createArticleSearchUrl, getPreferredArticleUrl, isLikelyArticleUrl, normalizeNewsUrl, resolveArticleUrl } from "../src/services/news/url.ts";
-import { createGoogleNewsRssUrl, deduplicateRssNews, normalizeRssCategories, parseGoogleNewsRss } from "../src/services/news/rss.ts";
+import { createBingNewsRssUrl, createGoogleNewsRssUrl, deduplicateRssNews, normalizeRssCategories, parseBingNewsRss, parseGoogleNewsRss } from "../src/services/news/rss.ts";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
@@ -144,9 +144,20 @@ test("RSSリクエストを制限し、不正な入力を除外する",()=>{
   assert.deepEqual(normalizeRssCategories("invalid"),[]);
 });
 
+test("代替RSSから配信元の直接記事URLを取り出す",()=>{
+  const category={id:"ai",name:"AI",keywords:["AI"],excludedKeywords:[]};
+  const xml=`<rss><channel><item><title>AIの最新記事</title><link>http://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;url=https%3A%2F%2Fexample.com%2Fnews%2F42%3Futm_source%3Drss</link><pubDate>Tue, 14 Jul 2026 14:30:00 GMT</pubDate><News:Source>ニュース社</News:Source></item></channel></rss>`;
+  const [item]=parseBingNewsRss(xml,category);
+  assert.equal(item.articleUrl,"https://example.com/news/42?utm_source=rss");
+  assert.equal(item.sourceUrl,"https://example.com");
+  assert.equal(item.sourceName,"ニュース社");
+  assert.equal(item.redirectCount,1);
+  assert.match(createBingNewsRssUrl(category),/^https:\/\/www\.bing\.com\/news\/search\?/);
+});
+
 test("実ニュース取得UIとモックフォールバックを提供する",async()=>{
   const [app,route]=await Promise.all([read("app/InstaNewsStudio.tsx"),read("app/api/news/route.ts")]);
   for(const phrase of ["実ニュース","最新ニュースを取得","公開RSS","モックニュースを表示中","生成AI・AI APIは使用していません"])assert.match(app,new RegExp(phrase));
-  assert.match(route,/Google News RSS/);
+  assert.match(route,/Public News RSS/);
   assert.match(route,/status:502/);
 });

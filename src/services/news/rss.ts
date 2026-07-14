@@ -38,6 +38,33 @@ export function createGoogleNewsRssUrl(category:RssCategoryRequest):string {
   return `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ja&gl=JP&ceid=JP:ja`;
 }
 
+export function createBingNewsRssUrl(category:RssCategoryRequest):string {
+  const terms=[category.name,...category.keywords].map(value=>value.trim()).filter(Boolean).slice(0,6);
+  const exclusions=(category.excludedKeywords??[]).map(value=>value.trim()).filter(Boolean).slice(0,4).map(value=>`-${value}`);
+  return `https://www.bing.com/news/search?q=${encodeURIComponent([...terms,...exclusions].join(" "))}&format=rss&setlang=ja-jp`;
+}
+
+function bingArticleUrl(value:string):string {
+  try{
+    const wrapper=new URL(value),embedded=wrapper.searchParams.get("url");
+    if(embedded&&/^https?:\/\//i.test(embedded))return embedded;
+    return value;
+  }catch{return value;}
+}
+
+export function parseBingNewsRss(xml:string,category:RssCategoryRequest,feedUrl=createBingNewsRssUrl(category)):NewsItem[] {
+  const items=xml.match(/<item\b[\s\S]*?<\/item>/gi)??[];
+  return items.flatMap((block,index)=>{
+    const title=tag(block,"title"),wrapperLink=tag(block,"link"),articleUrl=bingArticleUrl(wrapperLink),sourceName=tag(block,"News:Source")||"配信元不明";
+    if(!title||!/^https?:\/\//i.test(articleUrl))return [];
+    if((category.excludedKeywords??[]).some(word=>word&&title.toLowerCase().includes(word.toLowerCase())))return [];
+    const published=tag(block,"pubDate"),publishedAt=Number.isNaN(Date.parse(published))?new Date().toISOString():new Date(published).toISOString();
+    let sourceUrl="";try{sourceUrl=new URL(articleUrl).origin;}catch{}
+    const matched=category.keywords.filter(keyword=>title.toLowerCase().includes(keyword.toLowerCase()));
+    return [{id:`rss-${category.id}-${stableId(`${articleUrl}-${index}`)}`,title,summary:`「${title}」について配信された記事です。詳しい内容は元記事で確認してください。`,sourceName,articleUrl,sourceUrl,feedUrl,originalUrl:wrapperLink,isArticleUrl:true,redirectCount:articleUrl===wrapperLink?0:1,publishedAt,category:category.name,categoryId:category.id,keywords:matched,relevanceScore:Math.min(5,Math.max(3,3+matched.length)),status:"candidate" as const}];
+  });
+}
+
 export function parseGoogleNewsRss(xml:string,category:RssCategoryRequest,feedUrl=createGoogleNewsRssUrl(category)):NewsItem[] {
   const items=xml.match(/<item\b[\s\S]*?<\/item>/gi)??[];
   return items.flatMap((block,index)=>{
