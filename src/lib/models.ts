@@ -1,4 +1,6 @@
 import type { NewsItem } from "../services/news/NewsProvider";
+import type { FavoriteCategory } from "./categories";
+export type { FavoriteCategory } from "./categories";
 
 export type DraftStatus = "下書き" | "完成" | "投稿済み" | "保留";
 export interface PostSlide { id:string; order:number; template:string; headline:string; body:string; }
@@ -7,7 +9,7 @@ export interface PostDraft {
   hashtags:string[]; sourceNote:string; status:DraftStatus; scheduledDate:string; publishedDate?:string;
   createdAt:string; updatedAt:string; slides:PostSlide[];
 }
-export interface InterestProfile { purpose:string; categories:string[]; keywords:Record<string,string[]>; excludedKeywords:string[]; preferredStyles:string[]; }
+export interface InterestProfile { purpose:string; categories:string[]; keywords:Record<string,string[]>; excludedKeywords:string[]; preferredStyles:string[]; favoriteCategories:FavoriteCategory[]; }
 
 export const categories = ["広島東洋カープ","プロ野球","女子プロレス","女子駅伝","女子バスケットボール","ラグビー","サッカー","AI","アプリ開発","教育","高校受験"];
 export const styles = ["一言紹介","ニュース解説","私の考え","比較","ランキング","選手評価","オーダー予想","戦力分析","データカード","コラム","今日の論点","振り返り"];

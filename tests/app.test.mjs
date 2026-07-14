@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { createFavoriteCategory, createInitialFavoriteCategories, deleteFavoriteCategory, isFrequentCategory, recordCategoryUsage, reorderFavoriteCategories } from "../src/lib/categories.ts";
+import { getPreferredArticleUrl, isLikelyArticleUrl, normalizeNewsUrl, resolveArticleUrl } from "../src/services/news/url.ts";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
@@ -40,4 +42,53 @@ test("PWAと8種類のテーマを提供する", async()=>{
   assert.equal(JSON.parse(manifest).display,"standalone");
   assert.equal((models.match(/\[".+?","theme-/g)||[]).length,8);
   assert.match(layout,/manifest\.webmanifest/);
+});
+
+test("おすすめジャンルを追加・削除・並び替え・初期化できる",()=>{
+  const initial=createInitialFavoriteCategories();
+  assert.equal(initial.length,8);
+  const added=[...initial,createFavoriteCategory(initial.length,"custom-test")];
+  assert.equal(added.length,9);
+  assert.equal(added.at(-1).displayName,"新しいジャンル");
+  const reordered=reorderFavoriteCategories(added,"custom-test",initial[0].id);
+  assert.equal(reordered[0].id,"custom-test");
+  assert.deepEqual(reordered.map(item=>item.order),reordered.map((_,index)=>index));
+  const deleted=deleteFavoriteCategory(reordered,"custom-test");
+  assert.equal(deleted.length,8);
+  const reset=createInitialFavoriteCategories();
+  assert.equal(reset.every(category=>category.usageCount===0),true);
+});
+
+test("ジャンル利用回数と最近よく利用する判定を更新する",()=>{
+  let categories=createInitialFavoriteCategories();
+  for(let index=0;index<3;index++)categories=recordCategoryUsage(categories,"AI",`2026-07-1${index+1}T00:00:00.000Z`);
+  const ai=categories.find(category=>category.displayName==="AI");
+  assert.equal(ai.usageCount,3);
+  assert.equal(ai.lastUsedAt,"2026-07-13T00:00:00.000Z");
+  assert.equal(isFrequentCategory(ai),true);
+});
+
+test("記事URLを正規化し、一覧URLと記事URLを判定する",()=>{
+  assert.equal(normalizeNewsUrl("https://example.com/news/123/?utm_source=rss&b=2&a=1#top"),"https://example.com/news/123?a=1&b=2");
+  assert.equal(isLikelyArticleUrl("https://example.com/"),false);
+  assert.equal(isLikelyArticleUrl("https://example.com/rss.xml"),false);
+  assert.equal(isLikelyArticleUrl("https://example.com/category/sports"),false);
+  assert.equal(isLikelyArticleUrl("https://example.com/news/2026/important-story"),true);
+  assert.equal(getPreferredArticleUrl({articleUrl:"https://example.com/news/1?utm_medium=rss",originalUrl:"https://example.com/feed",isArticleUrl:true}),"https://example.com/news/1");
+});
+
+test("RSSのリダイレクト先を記事URLとして優先する",async()=>{
+  const responses=new Map([
+    ["https://example.com/go",new Response(null,{status:302,headers:{location:"/news/42?utm_campaign=test"}})],
+    ["https://example.com/news/42",new Response(null,{status:200})],
+  ]);
+  const result=await resolveArticleUrl("https://example.com/go",async input=>responses.get(input)??new Response(null,{status:404}));
+  assert.deepEqual(result,{articleUrl:"https://example.com/news/42",redirectCount:1,isArticleUrl:true});
+});
+
+test("ニュース導線とジャンル管理UIを提供する",async()=>{
+  const app=await read("app/InstaNewsStudio.tsx");
+  for(const phrase of ["おすすめジャンル管理","ジャンル追加","初期8ジャンルへ戻す","この記事を読む","配信元を見る","リンクをコピー","タイトルをコピー"])assert.match(app,new RegExp(phrase));
+  assert.match(app,/onDragStart/);
+  assert.match(app,/onTouchStart/);
 });

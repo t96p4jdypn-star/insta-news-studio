@@ -3,18 +3,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { mockNews } from "../src/services/news/MockNewsProvider";
 import type { NewsItem } from "../src/services/news/NewsProvider";
-import { categories, generateDraft, styles, suggestStyle, suggestTheme, themes, tones, type InterestProfile, type PostDraft } from "../src/lib/models";
+import { generateDraft, styles, suggestStyle, suggestTheme, themes, tones, type InterestProfile, type PostDraft } from "../src/lib/models";
+import { createFavoriteCategory, createInitialFavoriteCategories, deleteFavoriteCategory, isFrequentCategory, normalizeFavoriteCategories, recordCategoryUsage, reorderFavoriteCategories, type FavoriteCategory } from "../src/lib/categories";
+import { getPreferredArticleUrl, normalizeNewsItem, normalizeNewsUrl } from "../src/services/news/url";
 
 type View = "home" | "editor" | "stock" | "calendar" | "search" | "settings" | "guide";
 const PROFILE_KEY = "insta-news-studio-profile-v1";
 const DRAFT_KEY = "insta-news-studio-drafts-v1";
 const SAVED_KEY = "insta-news-studio-saved-v1";
-const defaultProfile: InterestProfile = { purpose:"両方", categories:["広島東洋カープ","女子プロレス","女子駅伝","女子バスケットボール","ラグビー","AI","アプリ開発","教育"], keywords:{"広島東洋カープ":["若手起用","二軍","ドラフト","戦力分析","先発投手"],"女子プロレス":["葉月","朱里","スターダム","試合内容","技術"],"女子駅伝":["クイーンズ駅伝","新加入","区間配置"],"ラグビー":["リーグワン","埼玉ワイルドナイツ","補強","戦術"]}, excludedKeywords:["芸能ゴシップ","グッズ情報","単なる試合結果"], preferredStyles:["私の考え","ニュース解説"] };
+const initialFavoriteCategories=createInitialFavoriteCategories();
+const defaultProfile: InterestProfile = { purpose:"両方", categories:initialFavoriteCategories.map(category=>category.displayName), keywords:Object.fromEntries(initialFavoriteCategories.map(category=>[category.displayName,category.searchKeywords])), excludedKeywords:["芸能ゴシップ","グッズ情報","単なる試合結果"], preferredStyles:["私の考え","ニュース解説"], favoriteCategories:initialFavoriteCategories };
 const categoryColors: Record<string,string> = {"広島東洋カープ":"#b72b25","プロ野球":"#bd5436","女子プロレス":"#80418e","女子駅伝":"#2672a0","女子バスケットボール":"#bc6034","ラグビー":"#377c55","サッカー":"#328278","AI":"#334963","アプリ開発":"#536477","教育":"#36578a"};
 
 function safeParse<T>(value:string|null, fallback:T):T { try { return value ? JSON.parse(value) as T : fallback; } catch { return fallback; } }
 function formatDate(value:string) { return new Intl.DateTimeFormat("ja-JP",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}).format(new Date(value)); }
 function iconFor(category:string) { if(category.includes("カープ")||category.includes("野球"))return "⚾"; if(category.includes("プロレス"))return "◆"; if(category.includes("駅伝"))return "↗"; if(category.includes("ラグビー"))return "◒"; if(category.includes("AI")||category.includes("アプリ"))return "✦"; return "●"; }
+function favoriteForNews(categories:FavoriteCategory[],news:NewsItem){return categories.find(category=>category.id===news.categoryId||category.displayName===news.category);}
+async function copyToClipboard(value:string){if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(value);return;}const area=document.createElement("textarea");area.value=value;area.style.position="fixed";area.style.opacity="0";document.body.appendChild(area);area.select();document.execCommand("copy");area.remove();}
+function syncProfileCategories(profile:InterestProfile,favoriteCategories:FavoriteCategory[]):InterestProfile { return {...profile,favoriteCategories,categories:favoriteCategories.filter(category=>category.isVisible).map(category=>category.displayName),keywords:Object.fromEntries(favoriteCategories.map(category=>[category.displayName,category.searchKeywords]))}; }
+function normalizeProfile(profile:Partial<InterestProfile>|null):InterestProfile { if(!profile)return defaultProfile; const favoriteCategories=normalizeFavoriteCategories(profile.favoriteCategories,profile.categories??[],profile.keywords??{}); return syncProfileCategories({...defaultProfile,...profile,favoriteCategories},favoriteCategories); }
 
 export default function InstaNewsStudio() {
   const [ready,setReady]=useState(false);
@@ -22,7 +29,7 @@ export default function InstaNewsStudio() {
   const [profile,setProfile]=useState<InterestProfile>(defaultProfile);
   const [view,setView]=useState<View>("home");
   const [filter,setFilter]=useState("すべて");
-  const [newsItems,setNewsItems]=useState(mockNews);
+  const [newsItems,setNewsItems]=useState(()=>mockNews.map(normalizeNewsItem));
   const [saved,setSaved]=useState<string[]>([]);
   const [drafts,setDrafts]=useState<PostDraft[]>([]);
   const [selectedNews,setSelectedNews]=useState<NewsItem|null>(null);
@@ -32,10 +39,12 @@ export default function InstaNewsStudio() {
 
   /* eslint-disable react-hooks/set-state-in-effect -- Device-local data is available only after client mount. */
   useEffect(()=>{
-    const storedProfile=safeParse<InterestProfile|null>(localStorage.getItem(PROFILE_KEY),null);
-    setProfile(storedProfile ?? defaultProfile);
+    const storedProfile=safeParse<Partial<InterestProfile>|null>(localStorage.getItem(PROFILE_KEY),null);
+    const nextProfile=normalizeProfile(storedProfile);
+    setProfile(nextProfile);
+    if(storedProfile)localStorage.setItem(PROFILE_KEY,JSON.stringify(nextProfile));
     setShowOnboarding(!storedProfile);
-    setDrafts(safeParse<PostDraft[]>(localStorage.getItem(DRAFT_KEY),[]));
+    setDrafts(safeParse<PostDraft[]>(localStorage.getItem(DRAFT_KEY),[]).map(draft=>({...draft,news:normalizeNewsItem(draft.news)})));
     setSaved(safeParse<string[]>(localStorage.getItem(SAVED_KEY),[]));
     setReady(true);
     if("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(()=>undefined);
@@ -45,11 +54,12 @@ export default function InstaNewsStudio() {
   useEffect(()=>{ if(!ready)return; localStorage.setItem(SAVED_KEY,JSON.stringify(saved)); },[saved,ready]);
   useEffect(()=>{ if(!toast)return; const id=setTimeout(()=>setToast(""),2600); return()=>clearTimeout(id); },[toast]);
 
-  const openEditor=(news:NewsItem)=>{ setSelectedNews(news); setActiveDraft(null); setView("editor"); window.scrollTo({top:0}); };
+  const persistProfile=(next:InterestProfile)=>{setProfile(next);localStorage.setItem(PROFILE_KEY,JSON.stringify(next));};
+  const openEditor=(news:NewsItem)=>{ const normalized=normalizeNewsItem(news); setSelectedNews(normalized); setActiveDraft(null); setView("editor"); const next=syncProfileCategories(profile,recordCategoryUsage(profile.favoriteCategories,normalized.category));persistProfile(next); window.scrollTo({top:0}); };
   const saveForLater=(id:string)=>{ setSaved(prev=>prev.includes(id)?prev.filter(x=>x!==id):[...prev,id]); setToast(saved.includes(id)?"あとで読むから外しました":"あとで読むに保存しました"); };
   const updateDraft=(next:PostDraft)=>{ setActiveDraft(next); setDrafts(prev=>[next,...prev.filter(d=>d.id!==next.id)]); };
   const nav=(next:View)=>{ setView(next); window.scrollTo({top:0,behavior:"smooth"}); };
-  const visibleNews=useMemo(()=>newsItems.filter(n=>(filter==="すべて"||n.category===filter)&&n.status!=="ignored"),[newsItems,filter]);
+  const visibleNews=useMemo(()=>newsItems.filter(news=>{const category=profile.favoriteCategories.find(item=>item.id===news.categoryId||item.displayName===news.category);return news.status!=="ignored"&&(!category||category.isVisible)&&(filter==="すべて"||category?.id===filter);}),[newsItems,filter,profile.favoriteCategories]);
   const searchResults=useMemo(()=>{const q=query.trim().toLowerCase(); if(!q)return drafts; return drafts.filter(d=>[d.news.category,d.news.title,d.caption,d.comment,d.status].join(" ").toLowerCase().includes(q));},[query,drafts]);
 
   if(!ready) return <main className="app-shell" aria-busy="true" />;
@@ -74,19 +84,19 @@ export default function InstaNewsStudio() {
         <div className="sidebar-tip"><strong>1日1本を、気軽に。</strong>今日使えそうな候補が{visibleNews.length}件あります。焦らず、自分の言葉をひとつ足しましょう。</div>
       </aside>
       <main className="main">
-        {view==="home"&&<Home news={visibleNews} filter={filter} setFilter={setFilter} saved={saved} openEditor={openEditor} saveForLater={saveForLater} setNewsItems={setNewsItems} drafts={drafts}/>}
+        {view==="home"&&<Home news={visibleNews} filter={filter} setFilter={setFilter} saved={saved} openEditor={openEditor} saveForLater={saveForLater} setNewsItems={setNewsItems} drafts={drafts} categories={profile.favoriteCategories} onAddRecommendation={id=>{const next=syncProfileCategories(profile,profile.favoriteCategories.map(category=>category.id===id?{...category,initiallyVisible:true,isVisible:true}:category));persistProfile(next);setToast("おすすめジャンルへ追加しました");}} onToast={setToast}/>}
         {view==="editor"&&<Editor key={`${selectedNews?.id??activeDraft?.news.id??"default"}-${activeDraft?.id??"new"}`} news={selectedNews ?? activeDraft?.news ?? mockNews[0]} existing={activeDraft} onSave={updateDraft} onToast={setToast}/>}
         {view==="stock"&&<Stock drafts={drafts} onOpen={d=>{setActiveDraft(d);setSelectedNews(d.news);nav("editor");}} onStatus={d=>updateDraft(d)} emptyAction={()=>openEditor(mockNews[0])}/>}
         {view==="calendar"&&<Calendar drafts={drafts}/>}
         {view==="search"&&<Search drafts={searchResults} query={query} setQuery={setQuery} onOpen={d=>{setActiveDraft(d);setSelectedNews(d.news);nav("editor");}}/>}
-        {view==="settings"&&<Settings profile={profile} setProfile={p=>{setProfile(p);localStorage.setItem(PROFILE_KEY,JSON.stringify(p));setToast("設定を保存しました");}} onOnboarding={()=>setShowOnboarding(true)} onToast={setToast}/>}
+        {view==="settings"&&<Settings profile={profile} setProfile={persistProfile} onOnboarding={()=>setShowOnboarding(true)} onToast={setToast}/>}
         {view==="guide"&&<Guide/>}
       </main>
     </div>
     <nav className="mobile-nav" aria-label="モバイルメニュー">
       <MobileNav icon="⌂" label="ホーム" active={view==="home"} onClick={()=>nav("home")}/><MobileNav icon="✎" label="つくる" active={view==="editor"} onClick={()=>selectedNews?nav("editor"):openEditor(mockNews[0])}/><MobileNav icon="▣" label="ストック" active={view==="stock"} onClick={()=>nav("stock")}/><MobileNav icon="□" label="予定" active={view==="calendar"} onClick={()=>nav("calendar")}/><MobileNav icon="⚙" label="設定" active={view==="settings"} onClick={()=>nav("settings")}/>
     </nav>
-    {showOnboarding&&<Onboarding initial={profile} onDone={p=>{setProfile(p);localStorage.setItem(PROFILE_KEY,JSON.stringify(p));setShowOnboarding(false);setToast("興味設定を保存しました");}}/>}
+    {showOnboarding&&<Onboarding initial={profile} onDone={p=>{persistProfile(p);setShowOnboarding(false);setToast("興味設定を保存しました");}}/>}
     {toast&&<div className="toast" role="status">✓ {toast}</div>}
   </div>;
 }
@@ -94,21 +104,38 @@ export default function InstaNewsStudio() {
 function NavButton({icon,label,active,onClick,count}:{icon:string;label:string;active:boolean;onClick:()=>void;count?:number}) { return <button className={`nav-btn ${active?"active":""}`} onClick={onClick}><span className="nav-icon">{icon}</span>{label}{count!==undefined&&<span className="nav-count">{count}</span>}</button>; }
 function MobileNav({icon,label,active,onClick}:{icon:string;label:string;active:boolean;onClick:()=>void}) { return <button className={active?"active":""} onClick={onClick}><span>{icon}</span>{label}</button>; }
 
-function Home({news,filter,setFilter,saved,openEditor,saveForLater,setNewsItems,drafts}:{news:NewsItem[];filter:string;setFilter:(s:string)=>void;saved:string[];openEditor:(n:NewsItem)=>void;saveForLater:(id:string)=>void;setNewsItems:React.Dispatch<React.SetStateAction<NewsItem[]>>;drafts:PostDraft[]}) {
-  const filters=["すべて","広島東洋カープ","女子プロレス","女子駅伝","AI"];
+function NewsLinks({news,onToast}:{news:NewsItem;onToast:(message:string)=>void}){
+  const articleUrl=getPreferredArticleUrl(news),sourceUrl=normalizeNewsUrl(news.sourceUrl),fallbackUrl=normalizeNewsUrl(news.originalUrl||news.articleUrl||news.sourceUrl);
+  const copyLink=async()=>{const value=articleUrl||fallbackUrl||sourceUrl;if(!value){onToast("コピーできるURLがありません");return;}await copyToClipboard(value);onToast(articleUrl?"記事リンクをコピーしました":"取得時URLをコピーしました");};
+  const copyTitle=async()=>{await copyToClipboard(news.title);onToast("検索用タイトルをコピーしました");};
+  return <div className="news-link-block">
+    <div className="news-links">
+      {articleUrl?<a className="article-read" href={articleUrl} target="_blank" rel="noopener noreferrer">この記事を読む ↗</a>:<span className="article-unavailable">記事リンク未確認</span>}
+      {sourceUrl&&<a href={sourceUrl} target="_blank" rel="noopener noreferrer">配信元を見る ↗</a>}
+      <button type="button" onClick={copyLink}>リンクをコピー</button>
+      <button type="button" onClick={copyTitle}>タイトルをコピー</button>
+    </div>
+    {!articleUrl&&<div className="link-fallback" role="note"><strong>記事本文への直接リンクを確認できません</strong><span>{news.sourceName} ・ {formatDate(news.publishedAt)}</span><p>{news.summary}</p>{fallbackUrl&&<code>{fallbackUrl}</code>}<small>タイトルをコピーしてSafariなどで検索できます。</small></div>}
+  </div>;
+}
+
+function Home({news,filter,setFilter,saved,openEditor,saveForLater,setNewsItems,drafts,categories,onAddRecommendation,onToast}:{news:NewsItem[];filter:string;setFilter:(s:string)=>void;saved:string[];openEditor:(n:NewsItem)=>void;saveForLater:(id:string)=>void;setNewsItems:React.Dispatch<React.SetStateAction<NewsItem[]>>;drafts:PostDraft[];categories:FavoriteCategory[];onAddRecommendation:(id:string)=>void;onToast:(s:string)=>void}) {
+  const filters=categories.filter(category=>category.isVisible&&category.initiallyVisible).sort((a,b)=>a.order-b.order);
+  const frequent=categories.filter(category=>isFrequentCategory(category)&&!category.initiallyVisible);
   const today=new Date().toLocaleDateString("ja-JP",{month:"long",day:"numeric",weekday:"long"});
   return <>
     <section className="hero"><div><span className="eyebrow">{today}</span><h1>今日のおすすめ</h1><p>あなたの興味に合わせて、投稿につながりそうなニュースを選びました。</p></div><button className="primary" onClick={()=>openEditor(news[0]??mockNews[0])}>＋ 投稿をつくる</button></section>
     <div className="stats"><div className="stat"><strong>{news.length}</strong><span>おすすめ候補</span></div><div className="stat"><strong>{saved.length}</strong><span>あとで読む</span></div><div className="stat"><strong>{drafts.filter(d=>d.status!=="投稿済み").length}</strong><span>作成途中</span></div><div className="stat"><strong>{drafts.filter(d=>d.status==="投稿済み").length}</strong><span>投稿済み</span></div></div>
     {news.filter(n=>n.category.includes("カープ")).length>=3&&<div className="status-note">最近カープの候補が多めです。女子プロレスやAIの候補も表示しています。</div>}
+    {frequent.length>0&&<div className="frequent-note"><div><strong>最近よく利用しています</strong><p>{frequent.map(category=>`${category.icon} ${category.displayName}（${category.usageCount}回）`).join("、")}</p></div>{frequent.map(category=><button className="secondary" key={category.id} onClick={()=>onAddRecommendation(category.id)}>おすすめへ追加</button>)}</div>}
     <div className="section-head"><div><h2>投稿候補</h2><p>★が多いほど、登録キーワードとの一致が多いニュースです。</p></div></div>
-    <div className="filter-row" style={{marginBottom:15}}>{filters.map(f=><button key={f} className={`chip ${filter===f?"active":""}`} onClick={()=>setFilter(f)}>{f}</button>)}</div>
+    <div className="filter-row" style={{marginBottom:15}}><button className={`chip ${filter==="すべて"?"active":""}`} onClick={()=>setFilter("すべて")}>すべて</button>{filters.map(category=><button key={category.id} className={`chip ${filter===category.id?"active":""}`} onClick={()=>setFilter(category.id)}>{category.icon} {category.displayName}</button>)}</div>
     <div className="news-grid">{news.map(item=><article className="news-card" key={item.id} data-testid={`news-${item.id}`}>
-      <div className="card-top"><span className="category" style={{background:categoryColors[item.category]??"#4b6d5c"}}>{iconFor(item.category)}　{item.category}</span><span className="time">{formatDate(item.publishedAt)}</span></div>
+      <div className="card-top"><span className="category" style={{background:categoryColors[item.category]??"#4b6d5c"}}>{favoriteForNews(categories,item)?.icon??iconFor(item.category)}　{favoriteForNews(categories,item)?.displayName??item.category}</span><span className="time">{formatDate(item.publishedAt)}</span></div>
       <h3>{item.title}</h3><p className="summary">{item.summary}</p>
       <div className="meta"><span>{item.sourceName}</span><span>・</span><span className="stars" aria-label={`興味度${item.relevanceScore}`}>{"★".repeat(item.relevanceScore)}{"☆".repeat(5-item.relevanceScore)}</span></div>
       <div className="card-actions"><button className="primary" onClick={()=>openEditor(item)}>投稿候補にする</button><button className="secondary" aria-label={`${item.title}をあとで読む`} onClick={()=>saveForLater(item.id)}>{saved.includes(item.id)?"✓":"♡"}</button></div>
-      <div style={{display:"flex",justifyContent:"space-between",marginTop:9}}><a className="ghost" style={{fontSize:10}} href={item.sourceUrl} target="_blank" rel="noreferrer">元記事を開く ↗</a><button className="ghost" style={{fontSize:10}} onClick={()=>setNewsItems(prev=>prev.map(n=>n.id===item.id?{...n,status:"ignored"}:n))}>興味なし</button></div>
+      <NewsLinks news={item} onToast={onToast}/><button className="ghost ignore-link" onClick={()=>setNewsItems(prev=>prev.map(n=>n.id===item.id?{...n,status:"ignored"}:n))}>興味なし</button>
     </article>)}{news.length===0&&<div className="empty">この条件のニュースはありません。別のジャンルを選んでください。</div>}</div>
   </>;
 }
@@ -133,7 +160,7 @@ function Editor({news,existing,onSave,onToast}:{news:NewsItem;existing:PostDraft
     <section className="hero"><div><span className="eyebrow">CREATE A POST</span><h1>投稿をつくる</h1><p>ニュースの事実に、あなた自身の短い視点を足します。</p></div></section>
     <div className="editor-layout">
       <div className="panel">
-        <div className="source-box"><span className="category" style={{background:categoryColors[news.category]??"#4b6d5c"}}>{news.category}</span><h3>{news.title}</h3><p>{news.summary}</p><a className="ghost" style={{fontSize:10,padding:0,marginTop:8}} href={news.sourceUrl} target="_blank" rel="noreferrer">{news.sourceName}で確認する ↗</a></div>
+        <div className="source-box"><span className="category" style={{background:categoryColors[news.category]??"#4b6d5c"}}>{news.category}</span><h3>{news.title}</h3><p>{news.summary}</p><NewsLinks news={news} onToast={onToast}/></div>
         <div className="field"><label htmlFor="comment">あなたのコメント <span style={{color:"#b34122"}}>必須</span></label><textarea id="comment" value={comment} onChange={e=>setComment(e.target.value)} placeholder="例：もっと早く一軍で使うべきだった。今後の起用にも注目したい。" aria-describedby="comment-help"/><small id="comment-help" style={{color:"#7b827c"}}>短文で大丈夫です。スマートフォンの音声入力も使えます。</small>
           <div className="hint-questions">{["何が面白かったですか","賛成ですか、反対ですか","今後どうなると思いますか","誰に注目していますか"].map(q=><button key={q} onClick={()=>setComment(c=>c+(c?" ":"")+q.replace("ですか","だと思う理由は…"))}>{q}</button>)}</div></div>
         <div className="field"><span className="label">投稿スタイル <small style={{color:"#e4633c"}}>おすすめ：{suggestStyle(news.category,news.title)}</small></span><div className="option-grid">{styles.slice(0,8).map(s=><button className={`option ${style===s?"selected":""}`} key={s} onClick={()=>setStyle(s)}>{s}</button>)}</div></div>
@@ -169,6 +196,38 @@ function Search({drafts,query,setQuery,onOpen}:{drafts:PostDraft[];query:string;
 
 function Guide(){const steps=["Instagramを開く","画面下または上部の「＋」を押す","「投稿」を選ぶ","保存した画像を選ぶ","複数画像なら「複数選択」を押す","「次へ」を押す","キャプション欄を長押しする","「貼り付け」を押す","名前・数字・出典を確認する","最後に「シェア」を押す"];return <><section className="hero"><div><span className="eyebrow">BEGINNER GUIDE</span><h1>Instagramへの投稿手順</h1><p>最後の「シェア」は、内容を確認してからご自身で押してください。</p></div></section><div className="editor-layout"><div className="panel"><h2>画像と本文を用意する</h2><ol style={{paddingLeft:24,lineHeight:2.2}}>{steps.map((s,i)=><li key={s}><strong>{s}</strong>{i===3&&<small style={{display:"block",color:"#737b75"}}>画像は通常「写真」または「最近の項目」にあります。</small>}</li>)}</ol></div><div className="panel"><h2>投稿前チェック</h2>{["画像は正しい","名前や数字は正しい","誤字がない","ニュース出典を確認した","投稿して問題ない"].map(x=><label key={x} style={{display:"flex",gap:10,alignItems:"center",minHeight:48,borderBottom:"1px solid #ecece6"}}><input type="checkbox"/> {x}</label>)}<div className="status-note" style={{marginTop:20}}>ニュース写真や記事本文は転用せず、このアプリで作った文字・図形中心の画像を使います。</div><a className="primary" style={{width:"100%",textDecoration:"none"}} href="https://www.instagram.com/" target="_blank" rel="noreferrer">Instagramを開く ↗</a></div></div></>;}
 
-function Settings({profile,setProfile,onOnboarding,onToast}:{profile:InterestProfile;setProfile:(p:InterestProfile)=>void;onOnboarding:()=>void;onToast:(s:string)=>void}) {const [excluded,setExcluded]=useState(profile.excludedKeywords.join("、"));const exportData=()=>{const blob=new Blob([JSON.stringify({profile,drafts:safeParse(localStorage.getItem(DRAFT_KEY),[])},null,2)],{type:"application/json"});const a=document.createElement("a");a.download="insta-news-studio-export.json";a.href=URL.createObjectURL(blob);a.click();URL.revokeObjectURL(a.href);onToast("データを書き出しました");};return <><section className="hero"><div><span className="eyebrow">PREFERENCES</span><h1>設定</h1><p>興味、文体、データ、接続状況を管理します。</p></div></section><div className="settings-grid"><div className="setting-card"><h3>興味ジャンル</h3><p>{profile.categories.join("、")}</p><button className="secondary" onClick={onOnboarding}>興味設定をやり直す</button></div><div className="setting-card"><h3>除外キーワード</h3><p>候補に出したくない内容を「、」で区切ります。</p><input className="search-input" value={excluded} onChange={e=>setExcluded(e.target.value)}/><button className="primary" style={{marginTop:9}} onClick={()=>setProfile({...profile,excludedKeywords:excluded.split("、").filter(Boolean)})}>保存</button></div><div className="setting-card"><h3>API接続状況</h3><p><strong style={{color:"#a84b28"}}>モックモード</strong><br/>ニュースAPI・AI APIは未接続です。すべての主要機能は固定ルールで動作します。</p></div><div className="setting-card"><h3>データのエクスポート</h3><p>興味設定と投稿素材をJSON形式で保存します。</p><button className="secondary" onClick={exportData}>データを書き出す</button></div><div className="setting-card"><h3>画像利用のルール</h3><p>アップロードする画像は、自分で撮影したもの、または使用許可を得たものに限ります。</p><label style={{fontSize:11}}><input type="checkbox"/> この画像利用ルールを確認しました</label></div><div className="setting-card"><h3>初心者向け案内</h3><p>初回設定やInstagram投稿手順はいつでも再表示できます。</p><button className="secondary" onClick={onOnboarding}>初回案内を表示</button></div></div></>;}
+function Settings({profile,setProfile,onOnboarding,onToast}:{profile:InterestProfile;setProfile:(p:InterestProfile)=>void;onOnboarding:()=>void;onToast:(s:string)=>void}) {
+  const [excluded,setExcluded]=useState(profile.excludedKeywords.join("、"));
+  const exportData=()=>{const blob=new Blob([JSON.stringify({profile,drafts:safeParse(localStorage.getItem(DRAFT_KEY),[])},null,2)],{type:"application/json"});const a=document.createElement("a");a.download="insta-news-studio-export.json";a.href=URL.createObjectURL(blob);a.click();URL.revokeObjectURL(a.href);onToast("データを書き出しました");};
+  const updateCategories=(next:FavoriteCategory[])=>setProfile(syncProfileCategories(profile,next));
+  return <><section className="hero"><div><span className="eyebrow">PREFERENCES</span><h1>設定</h1><p>興味、文体、データ、接続状況を管理します。</p></div></section><div className="settings-grid">
+    <div className="setting-card category-manager-card"><CategoryManager categories={profile.favoriteCategories} onChange={updateCategories} onToast={onToast}/></div>
+    <div className="setting-card"><h3>全体の除外キーワード</h3><p>全ジャンルで候補に出したくない内容を「、」で区切ります。</p><input className="search-input" value={excluded} onChange={e=>setExcluded(e.target.value)}/><button className="primary" style={{marginTop:9}} onClick={()=>{setProfile({...profile,excludedKeywords:excluded.split("、").map(x=>x.trim()).filter(Boolean)});onToast("除外キーワードを保存しました");}}>保存</button></div>
+    <div className="setting-card"><h3>API接続状況</h3><p><strong style={{color:"#a84b28"}}>モックモード</strong><br/>ニュースAPI・AI APIは未接続です。すべての主要機能は固定ルールで動作します。</p></div><div className="setting-card"><h3>データのエクスポート</h3><p>興味設定、ジャンル管理、利用回数、投稿素材をJSON形式で保存します。</p><button className="secondary" onClick={exportData}>データを書き出す</button></div><div className="setting-card"><h3>画像利用のルール</h3><p>アップロードする画像は、自分で撮影したもの、または使用許可を得たものに限ります。</p><label style={{fontSize:11}}><input type="checkbox"/> この画像利用ルールを確認しました</label></div><div className="setting-card"><h3>初心者向け案内</h3><p>初回設定やInstagram投稿手順はいつでも再表示できます。</p><button className="secondary" onClick={onOnboarding}>初回案内を表示</button></div>
+  </div></>;
+}
 
-function Onboarding({initial,onDone}:{initial:InterestProfile;onDone:(p:InterestProfile)=>void}) {const [purpose,setPurpose]=useState(initial.purpose);const [selected,setSelected]=useState(initial.categories);const toggle=(c:string)=>setSelected(p=>p.includes(c)?p.filter(x=>x!==c):[...p,c]);return <div className="onboarding" role="dialog" aria-modal="true" aria-labelledby="welcome-title"><div className="onboard-card"><span className="eyebrow">WELCOME TO YOUR STUDIO</span><h1 id="welcome-title">あなたの興味を<br/>少しだけ教えてください。</h1><p>ニュース候補の並び順に使います。あとから設定でいつでも変更できます。</p><div className="field"><span className="label">1. いちばん近い利用目的</span><div className="purpose">{["ニュース収集が中心","投稿作成が中心","両方"].map(p=><button className={purpose===p?"selected":""} onClick={()=>setPurpose(p)} key={p}>{p}</button>)}</div></div><div className="field"><span className="label">2. 興味のあるジャンル（複数選択できます）</span><div className="interest-cloud">{categories.map(c=><button key={c} className={selected.includes(c)?"selected":""} onClick={()=>toggle(c)}>✓ {c}</button>)}</div></div><div className="onboard-footer"><small>選択中：{selected.length}ジャンル</small><button className="primary" data-testid="finish-onboarding" disabled={!selected.length} onClick={()=>onDone({...initial,purpose,categories:selected})}>おすすめを見る →</button></div></div></div>;}
+function CategoryManager({categories,onChange,onToast}:{categories:FavoriteCategory[];onChange:(categories:FavoriteCategory[])=>void;onToast:(message:string)=>void}){
+  const [draggingId,setDraggingId]=useState<string|null>(null);const touchTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
+  const ordered=[...categories].sort((a,b)=>a.order-b.order);
+  const update=(id:string,patch:Partial<FavoriteCategory>)=>onChange(ordered.map(category=>category.id===id?{...category,...patch}:category));
+  const move=(id:string,direction:-1|1)=>{const index=ordered.findIndex(category=>category.id===id),target=ordered[index+direction];if(target)onChange(reorderFavoriteCategories(ordered,id,target.id));};
+  const reorder=(activeId:string,targetId:string)=>{const next=reorderFavoriteCategories(ordered,activeId,targetId);if(next!==ordered)onChange(next);};
+  const add=()=>{onChange([...ordered,createFavoriteCategory(ordered.length)]);onToast("新しいジャンルを追加しました");};
+  const remove=(category:FavoriteCategory)=>{if(!window.confirm(`「${category.displayName}」を削除しますか？`))return;onChange(deleteFavoriteCategory(ordered,category.id));onToast("ジャンルを削除しました");};
+  const reset=()=>{if(!window.confirm("おすすめジャンルを初期8ジャンルへ戻しますか？ 利用回数と追加ジャンルもリセットされます。"))return;onChange(createInitialFavoriteCategories());onToast("初期8ジャンルへ戻しました");};
+  const clearTouch=()=>{if(touchTimer.current)clearTimeout(touchTimer.current);touchTimer.current=null;setDraggingId(null);};
+  return <section aria-labelledby="category-manager-title"><div className="category-manager-title"><div><h3 id="category-manager-title">おすすめジャンル管理</h3><p>ドラッグで並び替えできます。スマートフォンでは左のハンドルを長押ししてください。変更は自動保存されます。</p></div><div className="manager-actions"><button className="secondary" onClick={add}>＋ ジャンル追加</button><button className="danger" onClick={reset}>初期8ジャンルへ戻す</button></div></div>
+    <div className="category-list" data-testid="category-manager">{ordered.map((category,index)=><article key={category.id} data-category-id={category.id} className={`category-editor ${draggingId===category.id?"dragging":""}`} onDragOver={event=>event.preventDefault()} onDrop={()=>{if(draggingId)reorder(draggingId,category.id);setDraggingId(null);}}>
+      <div className="category-editor-head"><button type="button" draggable className="drag-handle" aria-label={`${category.displayName}を並び替え`} onDragStart={()=>setDraggingId(category.id)} onDragEnd={()=>setDraggingId(null)} onClick={event=>event.preventDefault()} onTouchStart={()=>{touchTimer.current=setTimeout(()=>{setDraggingId(category.id);onToast("そのまま上下へ動かしてください");},450);}} onTouchMove={event=>{if(!draggingId)return;event.preventDefault();const touch=event.touches[0];const target=(document.elementFromPoint(touch.clientX,touch.clientY) as HTMLElement|null)?.closest<HTMLElement>("[data-category-id]")?.dataset.categoryId;if(target&&target!==draggingId)reorder(draggingId,target);}} onTouchEnd={clearTouch} onTouchCancel={clearTouch}>☰</button><span className="category-icon-preview">{category.icon}</span><div><strong>{category.displayName}</strong><small>{category.usageCount}回利用{category.lastUsedAt?` ・ 最終 ${new Date(category.lastUsedAt).toLocaleDateString("ja-JP")}`:""}</small></div><label className="switch-label"><input type="checkbox" checked={category.isVisible} onChange={event=>update(category.id,{isVisible:event.target.checked})}/> 表示</label><button className="mini-button" disabled={index===0} onClick={()=>move(category.id,-1)} aria-label="一つ上へ">↑</button><button className="mini-button" disabled={index===ordered.length-1} onClick={()=>move(category.id,1)} aria-label="一つ下へ">↓</button></div>
+      <div className="category-fields"><label>表示名<input value={category.displayName} onChange={event=>update(category.id,{displayName:event.target.value})}/></label><label>アイコン<input value={category.icon} maxLength={4} onChange={event=>update(category.id,{icon:event.target.value})}/></label><label className="wide-field">説明<textarea value={category.description} onChange={event=>update(category.id,{description:event.target.value})}/></label><label className="check-field"><input type="checkbox" checked={category.initiallyVisible} onChange={event=>update(category.id,{initiallyVisible:event.target.checked})}/> ホームのおすすめフィルターへ初期表示</label><TagEditor label="検索キーワード" values={category.searchKeywords} onChange={values=>update(category.id,{searchKeywords:values})}/><TagEditor label="除外キーワード" values={category.excludedKeywords} onChange={values=>update(category.id,{excludedKeywords:values})}/><button className="danger delete-category" onClick={()=>remove(category)}>このジャンルを削除</button></div>
+    </article>)}</div>
+  </section>;
+}
+
+function TagEditor({label,values,onChange}:{label:string;values:string[];onChange:(values:string[])=>void}){
+  const [value,setValue]=useState("");const add=()=>{const next=value.trim();if(!next||values.includes(next))return;onChange([...values,next]);setValue("");};
+  return <div className="tag-editor wide-field"><span className="label">{label}</span><div className="tag-list">{values.map(item=><button type="button" key={item} onClick={()=>onChange(values.filter(value=>value!==item))} aria-label={`${item}を削除`}>{item} ×</button>)}</div><div className="tag-add"><input value={value} onChange={event=>setValue(event.target.value)} onKeyDown={event=>{if(event.key==="Enter"){event.preventDefault();add();}}} placeholder={`${label}を追加`}/><button type="button" className="secondary" onClick={add}>追加</button></div></div>;
+}
+
+function Onboarding({initial,onDone}:{initial:InterestProfile;onDone:(p:InterestProfile)=>void}) {const [purpose,setPurpose]=useState(initial.purpose);const [selected,setSelected]=useState(initial.categories);const choices=initial.favoriteCategories;const toggle=(c:string)=>setSelected(p=>p.includes(c)?p.filter(x=>x!==c):[...p,c]);const finish=()=>{const favoriteCategories=choices.map(category=>({...category,isVisible:selected.includes(category.displayName)}));onDone(syncProfileCategories({...initial,purpose},favoriteCategories));};return <div className="onboarding" role="dialog" aria-modal="true" aria-labelledby="welcome-title"><div className="onboard-card"><span className="eyebrow">WELCOME TO YOUR STUDIO</span><h1 id="welcome-title">あなたの興味を<br/>少しだけ教えてください。</h1><p>ニュース候補の並び順に使います。あとから設定でいつでも変更できます。</p><div className="field"><span className="label">1. いちばん近い利用目的</span><div className="purpose">{["ニュース収集が中心","投稿作成が中心","両方"].map(p=><button className={purpose===p?"selected":""} onClick={()=>setPurpose(p)} key={p}>{p}</button>)}</div></div><div className="field"><span className="label">2. 興味のあるジャンル（複数選択できます）</span><div className="interest-cloud">{choices.map(category=><button key={category.id} className={selected.includes(category.displayName)?"selected":""} onClick={()=>toggle(category.displayName)}>{category.icon} {category.displayName}</button>)}</div></div><div className="onboard-footer"><small>選択中：{selected.length}ジャンル</small><button className="primary" data-testid="finish-onboarding" disabled={!selected.length} onClick={finish}>おすすめを見る →</button></div></div></div>;}

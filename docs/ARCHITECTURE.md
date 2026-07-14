@@ -1,10 +1,12 @@
 # アーキテクチャ
 
-UIはNext.js App Router上のクライアントアプリとして動作し、Cloudflare Workers互換のvinextでビルドする。画面状態と端末内データは`app/InstaNewsStudio.tsx`、生成ルールと型は`src/lib/models.ts`、ニュース取得境界は`src/services/news`に分離した。
+UIはNext.js App Router上のクライアントアプリとして動作し、Cloudflare Workers互換のvinextでビルドする。画面状態と端末内データは`app/InstaNewsStudio.tsx`、生成ルールと型は`src/lib/models.ts`、ジャンル移行・利用履歴は`src/lib/categories.ts`、ニュース取得とURL品質判定は`src/services/news`に分離した。
 
 ```text
 UI → Post生成ルール → PostDraft / PostSlide
 UI → NewsProvider → Mock / Manual / RSS（将来接続）
+UI → FavoriteCategory → 並び順 / 表示 / キーワード / 利用履歴
+NewsProvider → URL正規化 → 記事判定 → 記事URL優先
 UI → Storage Adapter（現在localStorage、将来D1/R2）
 ```
 
