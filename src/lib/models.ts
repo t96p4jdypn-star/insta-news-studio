@@ -1,13 +1,16 @@
 import type { NewsItem } from "../services/news/NewsProvider";
 import type { FavoriteCategory } from "./categories";
+import { composeCaption, createCaptionBlocks, type CaptionBlock } from "./composer";
 export type { FavoriteCategory } from "./categories";
+export type { CaptionBlock } from "./composer";
 
 export type DraftStatus = "下書き" | "完成" | "投稿済み" | "保留";
-export interface PostSlide { id:string; order:number; template:string; headline:string; body:string; }
+export type SlideLayout="standard"|"headline"|"quote"|"minimal";
+export interface PostSlide { id:string; order:number; template:string; headline:string; body:string; layout?:SlideLayout; }
 export interface PostDraft {
   id:string; news:NewsItem; comment:string; style:string; tone:string; headline:string; caption:string;
   hashtags:string[]; sourceNote:string; status:DraftStatus; scheduledDate:string; publishedDate?:string;
-  createdAt:string; updatedAt:string; slides:PostSlide[];
+  createdAt:string; updatedAt:string; slides:PostSlide[]; captionBlocks?:CaptionBlock[];
 }
 export interface InterestProfile { purpose:string; categories:string[]; keywords:Record<string,string[]>; excludedKeywords:string[]; preferredStyles:string[]; favoriteCategories:FavoriteCategory[]; }
 
@@ -18,6 +21,7 @@ export const themes = [
   ["スポーツ赤系","theme-red"],["プロレス紫系","theme-purple"],["駅伝青系","theme-blue"],["ラグビー緑系","theme-green"],
   ["AIダーク系","theme-dark"],["教育ネイビー系","theme-navy"],["モノクロ論評","theme-mono"],["明るいカード型","theme-light"],
 ] as const;
+export const slideLayouts:[[string,SlideLayout],[string,SlideLayout],[string,SlideLayout],[string,SlideLayout]]=[["標準","standard"],["見出し重視","headline"],["コメント引用","quote"],["シンプル","minimal"]];
 
 export function suggestStyle(category:string, title:string) {
   if (category.includes("駅伝")) return "オーダー予想";
@@ -42,7 +46,8 @@ export function generateDraft(news:NewsItem, comment:string, style:string, tone:
   const headline = news.title.replace(/[、。]/g," ").slice(0,34);
   const sourceNote = `${news.sourceName}の発表・報道を受けての個人的な感想です。`;
   const hashtags = [`#${news.category.replace(/\s/g,"")}`, "#ニュース解説", "#今日の論点"];
-  const caption = `【${headline}】\n\n${news.summary}\n\n私が注目したのは、${cleanComment}という点です。ニュースの事実と自分の見方を分けながら、今後の動きも見ていきたいと思います。\n\nみなさんは、どこに注目しましたか？\n\n出典：${news.sourceName}\n${sourceNote}\n\n${hashtags.join(" ")}`;
+  const captionBlocks=createCaptionBlocks(news,cleanComment,headline,sourceNote,hashtags);
+  const caption=composeCaption(captionBlocks);
   const base = [
     {headline, body:`TODAY'S TOPIC\n${news.category}`},
     {headline:"今日のニュース", body:news.summary.slice(0,110)},
@@ -51,5 +56,5 @@ export function generateDraft(news:NewsItem, comment:string, style:string, tone:
     {headline:"あなたはどう思う？", body:"気になったポイントを\nコメントで教えてください。"},
   ];
   const now = new Date().toISOString();
-  return { id:`draft-${Date.now()}`, news, comment:cleanComment, style, tone, headline, caption, hashtags, sourceNote, status:"下書き", scheduledDate:new Date().toISOString().slice(0,10), createdAt:now, updatedAt:now, slides:base.slice(0,slideCount).map((s,i)=>({id:`slide-${i}`,order:i+1,template,...s})) };
+  return { id:`draft-${Date.now()}`, news, comment:cleanComment, style, tone, headline, caption, captionBlocks, hashtags, sourceNote, status:"下書き", scheduledDate:new Date().toISOString().slice(0,10), createdAt:now, updatedAt:now, slides:base.slice(0,slideCount).map((s,i)=>({id:`slide-${i}`,order:i+1,template,layout:i===0?"headline":i===2?"quote":"standard",...s})) };
 }

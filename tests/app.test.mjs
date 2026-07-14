@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createFavoriteCategory, createInitialFavoriteCategories, deleteFavoriteCategory, isFrequentCategory, recordCategoryUsage, reorderFavoriteCategories } from "../src/lib/categories.ts";
-import { getPreferredArticleUrl, isLikelyArticleUrl, normalizeNewsUrl, resolveArticleUrl } from "../src/services/news/url.ts";
+import { composeCaption, createCaptionBlocks, polishCaptionBlocks, reorderCaptionBlocks, shortenCaptionBlocks } from "../src/lib/composer.ts";
+import { createManualNewsItem } from "../src/services/news/manual.ts";
+import { createArticleSearchUrl, getPreferredArticleUrl, isLikelyArticleUrl, normalizeNewsUrl, resolveArticleUrl } from "../src/services/news/url.ts";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
@@ -91,4 +93,30 @@ test("ニュース導線とジャンル管理UIを提供する",async()=>{
   for(const phrase of ["おすすめジャンル管理","ジャンル追加","初期8ジャンルへ戻す","この記事を読む","配信元を見る","リンクをコピー","タイトルをコピー"])assert.match(app,new RegExp(phrase));
   assert.match(app,/onDragStart/);
   assert.match(app,/onTouchStart/);
+});
+
+test("記事URL付きニュースを手動登録し、検索リンクを作れる",()=>{
+  const item=createManualNewsItem({title:"若手選手の起用方針を発表",summary:"起用方針の要点です。",sourceName:"球団公式",articleUrl:"https://example.com/news/2026/entry?utm_source=share",category:"プロ野球"},new Date("2026-07-15T00:00:00.000Z"));
+  assert.equal(item.articleUrl,"https://example.com/news/2026/entry");
+  assert.equal(item.isArticleUrl,true);
+  assert.equal(item.id,"manual-1784073600000");
+  assert.throws(()=>createManualNewsItem({title:"一覧",summary:"",sourceName:"",articleUrl:"https://example.com/",category:"AI"}),/記事本文/);
+  assert.match(createArticleSearchUrl("記事タイトル","配信元"),/^https:\/\/www\.google\.com\/search\?q=/);
+});
+
+test("生成AIなしで文章ブロックを構成・並び替え・整形・短縮できる",()=>{
+  const news={title:"ニュース",summary:"概要です。 次の説明です。",sourceName:"公式",category:"AI",keywords:["生成AI","教育"]};
+  const blocks=createCaptionBlocks(news,"自分の意見",news.title,"個人的な感想です。",["#AI"]);
+  assert.equal(blocks.length,7);
+  assert.match(composeCaption(blocks),/私が注目したのは/);
+  assert.equal(reorderCaptionBlocks(blocks,"summary",-1)[0].id,"summary");
+  assert.match(composeCaption(polishCaptionBlocks(blocks)),/概要です。\n次の説明です。/);
+  assert.ok(shortenCaptionBlocks(blocks.map(block=>({...block,body:block.body.repeat(20)}))).every(block=>block.body.length<=161));
+});
+
+test("画像と文章の直接編集UIを提供する",async()=>{
+  const app=await read("app/InstaNewsStudio.tsx");
+  for(const phrase of ["見つけた記事を登録する","タイトルで記事を探す","画像の文字と構成を編集","前へ移動","複製","文章構成エディター","読みやすく整える","短くまとめる"])assert.match(app,new RegExp(phrase));
+  assert.match(app,/layout-headline|layout-/);
+  assert.match(app,/captionBlocks/);
 });

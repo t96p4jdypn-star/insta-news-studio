@@ -38,6 +38,11 @@ export function getPreferredArticleUrl(news:Pick<NewsItem,"articleUrl"|"original
   return original&&isLikelyArticleUrl(original)?original:"";
 }
 
+export function createArticleSearchUrl(title:string,sourceName=""):string {
+  const query=[`"${title.trim()}"`,sourceName.trim()].filter(Boolean).join(" ");
+  return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+}
+
 export function normalizeNewsItem(news:NewsItem):NewsItem {
   const articleUrl=normalizeNewsUrl(news.articleUrl||news.originalUrl||news.sourceUrl);
   const sourceUrl=normalizeNewsUrl(news.sourceUrl);

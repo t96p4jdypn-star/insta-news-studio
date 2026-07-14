@@ -3,14 +3,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { mockNews } from "../src/services/news/MockNewsProvider";
 import type { NewsItem } from "../src/services/news/NewsProvider";
-import { generateDraft, styles, suggestStyle, suggestTheme, themes, tones, type InterestProfile, type PostDraft } from "../src/lib/models";
+import { generateDraft, slideLayouts, styles, suggestStyle, suggestTheme, themes, tones, type InterestProfile, type PostDraft, type PostSlide, type SlideLayout } from "../src/lib/models";
 import { createFavoriteCategory, createInitialFavoriteCategories, deleteFavoriteCategory, isFrequentCategory, normalizeFavoriteCategories, recordCategoryUsage, reorderFavoriteCategories, type FavoriteCategory } from "../src/lib/categories";
-import { getPreferredArticleUrl, normalizeNewsItem, normalizeNewsUrl } from "../src/services/news/url";
+import { composeCaption, createCaptionBlocks, polishCaptionBlocks, reorderCaptionBlocks, shortenCaptionBlocks, type CaptionBlock } from "../src/lib/composer";
+import { createManualNewsItem } from "../src/services/news/manual";
+import { createArticleSearchUrl, getPreferredArticleUrl, normalizeNewsItem, normalizeNewsUrl } from "../src/services/news/url";
 
 type View = "home" | "editor" | "stock" | "calendar" | "search" | "settings" | "guide";
 const PROFILE_KEY = "insta-news-studio-profile-v1";
 const DRAFT_KEY = "insta-news-studio-drafts-v1";
 const SAVED_KEY = "insta-news-studio-saved-v1";
+const MANUAL_NEWS_KEY = "insta-news-studio-manual-news-v1";
 const initialFavoriteCategories=createInitialFavoriteCategories();
 const defaultProfile: InterestProfile = { purpose:"両方", categories:initialFavoriteCategories.map(category=>category.displayName), keywords:Object.fromEntries(initialFavoriteCategories.map(category=>[category.displayName,category.searchKeywords])), excludedKeywords:["芸能ゴシップ","グッズ情報","単なる試合結果"], preferredStyles:["私の考え","ニュース解説"], favoriteCategories:initialFavoriteCategories };
 const categoryColors: Record<string,string> = {"広島東洋カープ":"#b72b25","プロ野球":"#bd5436","女子プロレス":"#80418e","女子駅伝":"#2672a0","女子バスケットボール":"#bc6034","ラグビー":"#377c55","サッカー":"#328278","AI":"#334963","アプリ開発":"#536477","教育":"#36578a"};
@@ -44,7 +47,9 @@ export default function InstaNewsStudio() {
     setProfile(nextProfile);
     if(storedProfile)localStorage.setItem(PROFILE_KEY,JSON.stringify(nextProfile));
     setShowOnboarding(!storedProfile);
-    setDrafts(safeParse<PostDraft[]>(localStorage.getItem(DRAFT_KEY),[]).map(draft=>({...draft,news:normalizeNewsItem(draft.news)})));
+    setDrafts(safeParse<PostDraft[]>(localStorage.getItem(DRAFT_KEY),[]).map(draft=>({...draft,news:normalizeNewsItem(draft.news),slides:draft.slides.map(slide=>({...slide,layout:slide.layout??"standard"}))})));
+    const manualNews=safeParse<NewsItem[]>(localStorage.getItem(MANUAL_NEWS_KEY),[]).map(normalizeNewsItem);
+    setNewsItems([...manualNews,...mockNews.map(normalizeNewsItem).filter(mock=>!manualNews.some(item=>item.id===mock.id))]);
     setSaved(safeParse<string[]>(localStorage.getItem(SAVED_KEY),[]));
     setReady(true);
     if("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(()=>undefined);
@@ -58,6 +63,7 @@ export default function InstaNewsStudio() {
   const openEditor=(news:NewsItem)=>{ const normalized=normalizeNewsItem(news); setSelectedNews(normalized); setActiveDraft(null); setView("editor"); const next=syncProfileCategories(profile,recordCategoryUsage(profile.favoriteCategories,normalized.category));persistProfile(next); window.scrollTo({top:0}); };
   const saveForLater=(id:string)=>{ setSaved(prev=>prev.includes(id)?prev.filter(x=>x!==id):[...prev,id]); setToast(saved.includes(id)?"あとで読むから外しました":"あとで読むに保存しました"); };
   const updateDraft=(next:PostDraft)=>{ setActiveDraft(next); setDrafts(prev=>[next,...prev.filter(d=>d.id!==next.id)]); };
+  const addManualNews=(item:NewsItem)=>{setNewsItems(prev=>{const next=[item,...prev.filter(news=>news.id!==item.id)];localStorage.setItem(MANUAL_NEWS_KEY,JSON.stringify(next.filter(news=>news.id.startsWith("manual-"))));return next;});setToast("記事リンク付きでニュースを追加しました");};
   const nav=(next:View)=>{ setView(next); window.scrollTo({top:0,behavior:"smooth"}); };
   const visibleNews=useMemo(()=>newsItems.filter(news=>{const category=profile.favoriteCategories.find(item=>item.id===news.categoryId||item.displayName===news.category);return news.status!=="ignored"&&(!category||category.isVisible)&&(filter==="すべて"||category?.id===filter);}),[newsItems,filter,profile.favoriteCategories]);
   const searchResults=useMemo(()=>{const q=query.trim().toLowerCase(); if(!q)return drafts; return drafts.filter(d=>[d.news.category,d.news.title,d.caption,d.comment,d.status].join(" ").toLowerCase().includes(q));},[query,drafts]);
@@ -84,7 +90,7 @@ export default function InstaNewsStudio() {
         <div className="sidebar-tip"><strong>1日1本を、気軽に。</strong>今日使えそうな候補が{visibleNews.length}件あります。焦らず、自分の言葉をひとつ足しましょう。</div>
       </aside>
       <main className="main">
-        {view==="home"&&<Home news={visibleNews} filter={filter} setFilter={setFilter} saved={saved} openEditor={openEditor} saveForLater={saveForLater} setNewsItems={setNewsItems} drafts={drafts} categories={profile.favoriteCategories} onAddRecommendation={id=>{const next=syncProfileCategories(profile,profile.favoriteCategories.map(category=>category.id===id?{...category,initiallyVisible:true,isVisible:true}:category));persistProfile(next);setToast("おすすめジャンルへ追加しました");}} onToast={setToast}/>}
+        {view==="home"&&<Home news={visibleNews} filter={filter} setFilter={setFilter} saved={saved} openEditor={openEditor} saveForLater={saveForLater} setNewsItems={setNewsItems} drafts={drafts} categories={profile.favoriteCategories} onAddNews={addManualNews} onAddRecommendation={id=>{const next=syncProfileCategories(profile,profile.favoriteCategories.map(category=>category.id===id?{...category,initiallyVisible:true,isVisible:true}:category));persistProfile(next);setToast("おすすめジャンルへ追加しました");}} onToast={setToast}/>}
         {view==="editor"&&<Editor key={`${selectedNews?.id??activeDraft?.news.id??"default"}-${activeDraft?.id??"new"}`} news={selectedNews ?? activeDraft?.news ?? mockNews[0]} existing={activeDraft} onSave={updateDraft} onToast={setToast}/>}
         {view==="stock"&&<Stock drafts={drafts} onOpen={d=>{setActiveDraft(d);setSelectedNews(d.news);nav("editor");}} onStatus={d=>updateDraft(d)} emptyAction={()=>openEditor(mockNews[0])}/>}
         {view==="calendar"&&<Calendar drafts={drafts}/>}
@@ -105,21 +111,21 @@ function NavButton({icon,label,active,onClick,count}:{icon:string;label:string;a
 function MobileNav({icon,label,active,onClick}:{icon:string;label:string;active:boolean;onClick:()=>void}) { return <button className={active?"active":""} onClick={onClick}><span>{icon}</span>{label}</button>; }
 
 function NewsLinks({news,onToast}:{news:NewsItem;onToast:(message:string)=>void}){
-  const articleUrl=getPreferredArticleUrl(news),sourceUrl=normalizeNewsUrl(news.sourceUrl),fallbackUrl=normalizeNewsUrl(news.originalUrl||news.articleUrl||news.sourceUrl);
+  const articleUrl=getPreferredArticleUrl(news),sourceUrl=normalizeNewsUrl(news.sourceUrl),fallbackUrl=normalizeNewsUrl(news.originalUrl||news.articleUrl||news.sourceUrl),searchUrl=createArticleSearchUrl(news.title,news.sourceName);
   const copyLink=async()=>{const value=articleUrl||fallbackUrl||sourceUrl;if(!value){onToast("コピーできるURLがありません");return;}await copyToClipboard(value);onToast(articleUrl?"記事リンクをコピーしました":"取得時URLをコピーしました");};
   const copyTitle=async()=>{await copyToClipboard(news.title);onToast("検索用タイトルをコピーしました");};
   return <div className="news-link-block">
     <div className="news-links">
-      {articleUrl?<a className="article-read" href={articleUrl} target="_blank" rel="noopener noreferrer">この記事を読む ↗</a>:<span className="article-unavailable">記事リンク未確認</span>}
+      {articleUrl?<a className="article-read" href={articleUrl} target="_blank" rel="noopener noreferrer">この記事を読む ↗</a>:<a className="article-search" href={searchUrl} target="_blank" rel="noopener noreferrer">タイトルで記事を探す ↗</a>}
       {sourceUrl&&<a href={sourceUrl} target="_blank" rel="noopener noreferrer">配信元を見る ↗</a>}
       <button type="button" onClick={copyLink}>リンクをコピー</button>
       <button type="button" onClick={copyTitle}>タイトルをコピー</button>
     </div>
-    {!articleUrl&&<div className="link-fallback" role="note"><strong>記事本文への直接リンクを確認できません</strong><span>{news.sourceName} ・ {formatDate(news.publishedAt)}</span><p>{news.summary}</p>{fallbackUrl&&<code>{fallbackUrl}</code>}<small>タイトルをコピーしてSafariなどで検索できます。</small></div>}
+    {!articleUrl&&<div className="link-fallback" role="note"><strong>記事本文への直接リンクは未登録です</strong><span>{news.sourceName} ・ {formatDate(news.publishedAt)}</span><p>{news.summary}</p>{fallbackUrl&&<code>{fallbackUrl}</code>}<small>「タイトルで記事を探す」から検索するか、見つけた記事を下の登録欄へ追加できます。</small></div>}
   </div>;
 }
 
-function Home({news,filter,setFilter,saved,openEditor,saveForLater,setNewsItems,drafts,categories,onAddRecommendation,onToast}:{news:NewsItem[];filter:string;setFilter:(s:string)=>void;saved:string[];openEditor:(n:NewsItem)=>void;saveForLater:(id:string)=>void;setNewsItems:React.Dispatch<React.SetStateAction<NewsItem[]>>;drafts:PostDraft[];categories:FavoriteCategory[];onAddRecommendation:(id:string)=>void;onToast:(s:string)=>void}) {
+function Home({news,filter,setFilter,saved,openEditor,saveForLater,setNewsItems,drafts,categories,onAddNews,onAddRecommendation,onToast}:{news:NewsItem[];filter:string;setFilter:(s:string)=>void;saved:string[];openEditor:(n:NewsItem)=>void;saveForLater:(id:string)=>void;setNewsItems:React.Dispatch<React.SetStateAction<NewsItem[]>>;drafts:PostDraft[];categories:FavoriteCategory[];onAddNews:(news:NewsItem)=>void;onAddRecommendation:(id:string)=>void;onToast:(s:string)=>void}) {
   const filters=categories.filter(category=>category.isVisible&&category.initiallyVisible).sort((a,b)=>a.order-b.order);
   const frequent=categories.filter(category=>isFrequentCategory(category)&&!category.initiallyVisible);
   const today=new Date().toLocaleDateString("ja-JP",{month:"long",day:"numeric",weekday:"long"});
@@ -128,6 +134,7 @@ function Home({news,filter,setFilter,saved,openEditor,saveForLater,setNewsItems,
     <div className="stats"><div className="stat"><strong>{news.length}</strong><span>おすすめ候補</span></div><div className="stat"><strong>{saved.length}</strong><span>あとで読む</span></div><div className="stat"><strong>{drafts.filter(d=>d.status!=="投稿済み").length}</strong><span>作成途中</span></div><div className="stat"><strong>{drafts.filter(d=>d.status==="投稿済み").length}</strong><span>投稿済み</span></div></div>
     {news.filter(n=>n.category.includes("カープ")).length>=3&&<div className="status-note">最近カープの候補が多めです。女子プロレスやAIの候補も表示しています。</div>}
     {frequent.length>0&&<div className="frequent-note"><div><strong>最近よく利用しています</strong><p>{frequent.map(category=>`${category.icon} ${category.displayName}（${category.usageCount}回）`).join("、")}</p></div>{frequent.map(category=><button className="secondary" key={category.id} onClick={()=>onAddRecommendation(category.id)}>おすすめへ追加</button>)}</div>}
+    <ManualNewsForm categories={categories} onAdd={onAddNews}/>
     <div className="section-head"><div><h2>投稿候補</h2><p>★が多いほど、登録キーワードとの一致が多いニュースです。</p></div></div>
     <div className="filter-row" style={{marginBottom:15}}><button className={`chip ${filter==="すべて"?"active":""}`} onClick={()=>setFilter("すべて")}>すべて</button>{filters.map(category=><button key={category.id} className={`chip ${filter===category.id?"active":""}`} onClick={()=>setFilter(category.id)}>{category.icon} {category.displayName}</button>)}</div>
     <div className="news-grid">{news.map(item=><article className="news-card" key={item.id} data-testid={`news-${item.id}`}>
@@ -140,17 +147,31 @@ function Home({news,filter,setFilter,saved,openEditor,saveForLater,setNewsItems,
   </>;
 }
 
+function ManualNewsForm({categories,onAdd}:{categories:FavoriteCategory[];onAdd:(news:NewsItem)=>void}){
+  const visible=categories.filter(category=>category.isVisible).sort((a,b)=>a.order-b.order),first=visible[0];
+  const [open,setOpen]=useState(false),[title,setTitle]=useState(""),[articleUrl,setArticleUrl]=useState(""),[sourceName,setSourceName]=useState(""),[summary,setSummary]=useState(""),[categoryId,setCategoryId]=useState(first?.id??""),[error,setError]=useState("");
+  const submit=()=>{const category=visible.find(item=>item.id===categoryId)??first;if(!category){setError("表示するジャンルを先に設定してください");return;}try{const item=createManualNewsItem({title,articleUrl,sourceName,summary,category:category.displayName,categoryId:category.id});onAdd(item);setTitle("");setArticleUrl("");setSourceName("");setSummary("");setError("");setOpen(false);}catch(reason){setError(reason instanceof Error?reason.message:"記事を登録できませんでした");}};
+  return <section className="manual-news"><button className="manual-news-toggle" onClick={()=>setOpen(value=>!value)} aria-expanded={open}><span>＋</span><div><strong>見つけた記事を登録する</strong><small>記事のURLを貼れば「この記事を読む」ボタンが使えます。</small></div><b>{open?"閉じる":"入力する"}</b></button>{open&&<div className="manual-news-form"><label>記事タイトル<input value={title} onChange={event=>setTitle(event.target.value)} placeholder="記事の見出しを入力"/></label><label>記事本文のURL<input value={articleUrl} onChange={event=>setArticleUrl(event.target.value)} placeholder="https://…/記事ページ" inputMode="url"/></label><label>配信元<input value={sourceName} onChange={event=>setSourceName(event.target.value)} placeholder="例：球団公式サイト"/></label><label>ジャンル<select value={categoryId} onChange={event=>setCategoryId(event.target.value)}>{visible.map(category=><option key={category.id} value={category.id}>{category.icon} {category.displayName}</option>)}</select></label><label className="manual-summary">短い要約（任意）<textarea value={summary} onChange={event=>setSummary(event.target.value)} placeholder="記事の要点を自分の言葉で短く入力"/></label>{error&&<p className="form-error" role="alert">{error}</p>}<button className="primary" onClick={submit}>記事リンク付きで追加</button></div>}</section>;
+}
+
 function Editor({news,existing,onSave,onToast}:{news:NewsItem;existing:PostDraft|null;onSave:(d:PostDraft)=>void;onToast:(s:string)=>void}) {
   const [comment,setComment]=useState(existing?.comment??"");
   const [style,setStyle]=useState(existing?.style??suggestStyle(news.category,news.title));
   const [tone,setTone]=useState(existing?.tone??tones[0]);
   const [slideCount,setSlideCount]=useState(existing?.slides.length??5);
   const [template,setTemplate]=useState(existing?.slides[0]?.template??suggestTheme(news.category));
-  const [draft,setDraft]=useState<PostDraft|null>(existing);
+  const [draft,setDraft]=useState<PostDraft|null>(existing?{...existing,slides:existing.slides.map(slide=>({...slide,layout:slide.layout??"standard"})),captionBlocks:existing.captionBlocks??createCaptionBlocks(existing.news,existing.comment,existing.headline,existing.sourceNote,existing.hashtags)}:null);
   const [activeSlide,setActiveSlide]=useState(0);
   const canvasRef=useRef<HTMLCanvasElement>(null);
   const make=()=>{ if(!comment.trim()){onToast("コメントをひとこと入力してください");return;} const next=generateDraft(news,comment,style,tone,slideCount,template); setDraft(next);setActiveSlide(0);onSave(next);onToast("投稿素材を生成しました"); };
-  const updateCaption=(caption:string)=>{ if(!draft)return; const next={...draft,caption,updatedAt:new Date().toISOString()};setDraft(next);onSave(next); };
+  const persistDraft=(next:PostDraft)=>{const saved={...next,updatedAt:new Date().toISOString()};setDraft(saved);onSave(saved);};
+  const updateCaption=(caption:string)=>{ if(!draft)return; persistDraft({...draft,caption}); };
+  const updateSlide=(patch:Partial<PostSlide>)=>{if(!draft)return;persistDraft({...draft,slides:draft.slides.map((item,index)=>index===activeSlide?{...item,...patch}:item)});};
+  const moveSlide=(direction:-1|1)=>{if(!draft)return;const target=activeSlide+direction;if(target<0||target>=draft.slides.length)return;const slides=[...draft.slides];[slides[activeSlide],slides[target]]=[slides[target],slides[activeSlide]];persistDraft({...draft,slides:slides.map((item,index)=>({...item,order:index+1}))});setActiveSlide(target);};
+  const duplicateSlide=()=>{if(!draft||draft.slides.length>=5){onToast("画像は最大5枚です");return;}const copy={...draft.slides[activeSlide],id:`slide-${Date.now()}`};const slides=[...draft.slides];slides.splice(activeSlide+1,0,copy);persistDraft({...draft,slides:slides.map((item,index)=>({...item,order:index+1}))});setSlideCount(slides.length);setActiveSlide(activeSlide+1);onToast("この画像を複製しました");};
+  const removeSlide=()=>{if(!draft||draft.slides.length<=1){onToast("画像は最低1枚必要です");return;}const slides=draft.slides.filter((_,index)=>index!==activeSlide).map((item,index)=>({...item,order:index+1}));persistDraft({...draft,slides});setSlideCount(slides.length);setActiveSlide(Math.min(activeSlide,slides.length-1));onToast("画像を削除しました");};
+  const changeTemplate=(value:string)=>{setTemplate(value);if(draft)persistDraft({...draft,slides:draft.slides.map(item=>({...item,template:value}))});};
+  const updateBlocks=(captionBlocks:CaptionBlock[])=>{if(!draft)return;persistDraft({...draft,captionBlocks,caption:composeCaption(captionBlocks)});};
   const copy=async()=>{ if(!draft)return; await navigator.clipboard.writeText(draft.caption);onToast("キャプションをコピーしました"); };
   const markComplete=()=>{if(!draft)return;const next={...draft,status:"完成" as const,updatedAt:new Date().toISOString()};setDraft(next);onSave(next);onToast("完成として保存しました");};
   const download=()=>{if(!draft)return; const slide=draft.slides[activeSlide]; drawSlide(canvasRef.current,slide,news.sourceName); const a=document.createElement("a");a.download=`insta-news-${activeSlide+1}.png`;a.href=canvasRef.current!.toDataURL("image/png");a.click();onToast(`${activeSlide+1}枚目をPNG保存しました`);};
@@ -166,25 +187,47 @@ function Editor({news,existing,onSave,onToast}:{news:NewsItem;existing:PostDraft
         <div className="field"><span className="label">投稿スタイル <small style={{color:"#e4633c"}}>おすすめ：{suggestStyle(news.category,news.title)}</small></span><div className="option-grid">{styles.slice(0,8).map(s=><button className={`option ${style===s?"selected":""}`} key={s} onClick={()=>setStyle(s)}>{s}</button>)}</div></div>
         <div className="field"><label htmlFor="tone">文体</label><select id="tone" value={tone} onChange={e=>setTone(e.target.value)}>{tones.map(t=><option key={t}>{t}</option>)}</select></div>
         <div className="field"><label htmlFor="slides">画像の枚数：{slideCount}枚</label><input id="slides" type="range" min="1" max="5" value={slideCount} onChange={e=>setSlideCount(Number(e.target.value))}/></div>
-        <div className="field"><span className="label">デザインテンプレート</span><div className="option-grid">{themes.map(([name,value])=><button key={value} className={`option ${template===value?"selected":""}`} onClick={()=>setTemplate(value)}><span style={{display:"inline-block",width:10,height:10,borderRadius:99,background:value.includes("red")?"#d33":value.includes("purple")?"#80418e":value.includes("blue")?"#2672a0":value.includes("green")?"#377c55":"#34495e",marginRight:7}}/>{name}</button>)}</div></div>
+        <div className="field"><span className="label">デザインテンプレート</span><div className="option-grid">{themes.map(([name,value])=><button key={value} className={`option ${template===value?"selected":""}`} onClick={()=>changeTemplate(value)}><span style={{display:"inline-block",width:10,height:10,borderRadius:99,background:value.includes("red")?"#d33":value.includes("purple")?"#80418e":value.includes("blue")?"#2672a0":value.includes("green")?"#377c55":"#34495e",marginRight:7}}/>{name}</button>)}</div></div>
         <div className="generate-row"><button className="primary" data-testid="generate-post" onClick={make}>{draft?"内容を再生成":"投稿素材を生成する"} ✦</button>{draft&&<button className="secondary" onClick={markComplete}>下書きを保存</button>}</div>
       </div>
       <div className="preview-wrap">
         {!draft||!slide?<div className="panel empty" style={{minHeight:420,display:"grid",placeItems:"center"}}><div><div style={{fontSize:44,marginBottom:10}}>✦</div><strong>ここに投稿画像ができます</strong><p>コメントを入力して「投稿素材を生成する」を押してください。</p></div></div>:<>
-          <div className="slide-shell"><div className={`canvas-card ${slide.template}`} data-testid="slide-preview"><span className="slide-num">INSTA NEWS STUDIO — {String(activeSlide+1).padStart(2,"0")}</span><h2 className="slide-title">{slide.headline}</h2><div className="slide-body">{slide.body}</div><span className="slide-source">出典：{news.sourceName} ｜ 個人的な感想を含みます</span></div><div className="slide-nav">{draft.slides.map((s,i)=><button key={s.id} aria-label={`${i+1}枚目を表示`} className={`slide-dot ${activeSlide===i?"active":""}`} onClick={()=>setActiveSlide(i)}/>)}</div></div>
+          <div className="slide-shell"><div className={`canvas-card ${slide.template} layout-${slide.layout??"standard"}`} data-testid="slide-preview"><span className="slide-num">INSTA NEWS STUDIO — {String(activeSlide+1).padStart(2,"0")}</span><h2 className="slide-title">{slide.headline}</h2><div className="slide-body">{slide.body}</div><span className="slide-source">出典：{news.sourceName} ｜ 個人的な感想を含みます</span></div><div className="slide-nav">{draft.slides.map((s,i)=><button key={s.id} aria-label={`${i+1}枚目を表示`} className={`slide-dot ${activeSlide===i?"active":""}`} onClick={()=>setActiveSlide(i)}/>)}</div></div>
+          <section className="slide-editor" aria-labelledby="slide-editor-title"><div className="section-head"><div><h2 id="slide-editor-title">画像の文字と構成を編集</h2><p>{activeSlide+1}枚目を直接直せます。生成AIは使いません。</p></div></div><label>画像内の見出し<input value={slide.headline} onChange={event=>updateSlide({headline:event.target.value})}/></label><label>画像内の本文<textarea value={slide.body} onChange={event=>updateSlide({body:event.target.value})}/></label><label>レイアウト<select value={slide.layout??"standard"} onChange={event=>updateSlide({layout:event.target.value as SlideLayout})}>{slideLayouts.map(([name,value])=><option key={value} value={value}>{name}</option>)}</select></label><div className="slide-edit-actions"><button className="secondary" disabled={activeSlide===0} onClick={()=>moveSlide(-1)}>← 前へ移動</button><button className="secondary" disabled={activeSlide===draft.slides.length-1} onClick={()=>moveSlide(1)}>後ろへ移動 →</button><button className="secondary" disabled={draft.slides.length>=5} onClick={duplicateSlide}>複製</button><button className="danger" disabled={draft.slides.length<=1} onClick={removeSlide}>削除</button></div></section>
           <canvas ref={canvasRef} width="1080" height="1080" hidden aria-hidden="true"/>
           <div className="preview-actions"><button className="primary" data-testid="download-png" onClick={download}>↓ この画像を保存</button><button className="secondary" data-testid="copy-caption" onClick={copy}>□ 本文をコピー</button></div>
-          <div className="caption-box"><div className="section-head" style={{margin:"0 0 10px"}}><div><h2 style={{fontSize:14}}>投稿キャプション</h2><p>事実と意見を分け、出典を記載しています。</p></div></div><textarea value={draft.caption} onChange={e=>updateCaption(e.target.value)} aria-label="投稿キャプション"/><button className="primary" style={{width:"100%"}} onClick={markComplete}>内容を確認して完成にする</button></div>
+          <CaptionComposer draft={draft} blocks={draft.captionBlocks??createCaptionBlocks(news,draft.comment,draft.headline,draft.sourceNote,draft.hashtags)} onChange={updateBlocks}/>
+          <div className="caption-box"><div className="section-head" style={{margin:"0 0 10px"}}><div><h2 style={{fontSize:14}}>投稿キャプション</h2><p>上の構成を反映した後、ここで自由に加筆できます。</p></div></div><textarea value={draft.caption} onChange={e=>updateCaption(e.target.value)} aria-label="投稿キャプション"/><button className="primary" style={{width:"100%"}} onClick={markComplete}>内容を確認して完成にする</button></div>
         </>}
       </div>
     </div>
   </>;
 }
 
+function CaptionComposer({draft,blocks,onChange}:{draft:PostDraft;blocks:CaptionBlock[];onChange:(blocks:CaptionBlock[])=>void}){
+  const ordered=[...blocks].sort((a,b)=>a.order-b.order);
+  const update=(id:string,patch:Partial<CaptionBlock>)=>onChange(ordered.map(block=>block.id===id?{...block,...patch}:block));
+  const reset=()=>onChange(createCaptionBlocks(draft.news,draft.comment,draft.headline,draft.sourceNote,draft.hashtags));
+  return <details className="caption-composer" open><summary><div><strong>文章構成エディター</strong><small>項目を並べ替え、不要な項目を外し、文章を直接加工できます。</small></div><span>生成AIなし</span></summary><div className="composer-toolbar"><button className="secondary" onClick={()=>onChange(polishCaptionBlocks(ordered))}>読みやすく整える</button><button className="secondary" onClick={()=>onChange(shortenCaptionBlocks(ordered))}>短くまとめる</button><button className="ghost" onClick={reset}>初期構成に戻す</button></div><div className="caption-blocks">{ordered.map((block,index)=><article key={block.id} className={`caption-block ${block.enabled?"":"disabled"}`}><div className="caption-block-head"><label><input type="checkbox" checked={block.enabled} onChange={event=>update(block.id,{enabled:event.target.checked})}/> {block.label}</label><button disabled={index===0} onClick={()=>onChange(reorderCaptionBlocks(ordered,block.id,-1))} aria-label={`${block.label}を上へ`}>↑</button><button disabled={index===ordered.length-1} onClick={()=>onChange(reorderCaptionBlocks(ordered,block.id,1))} aria-label={`${block.label}を下へ`}>↓</button></div><textarea value={block.body} disabled={!block.enabled} onChange={event=>update(block.id,{body:event.target.value})}/></article>)}</div></details>;
+}
+
 function drawSlide(canvas:HTMLCanvasElement|null,slide:PostDraft["slides"][number],source:string) {
   if(!canvas)return; const ctx=canvas.getContext("2d"); if(!ctx)return;
   const palettes:Record<string,[string,string,string]>={"theme-red":["#9f1d1d","#ee5d3c","#fff"],"theme-purple":["#351b59","#a24bb2","#fff"],"theme-blue":["#0a3f75","#2597bb","#fff"],"theme-green":["#164d34","#59a557","#fff"],"theme-dark":["#10151c","#27425c","#fff"],"theme-navy":["#142847","#345887","#fff"],"theme-mono":["#171717","#595959","#fff"],"theme-light":["#fffaf0","#f1e2ce","#183c31"]};
-  const [a,b,text]=palettes[slide.template]??palettes["theme-red"]; const grad=ctx.createLinearGradient(0,0,1080,1080);grad.addColorStop(0,a);grad.addColorStop(1,b);ctx.fillStyle=grad;ctx.fillRect(0,0,1080,1080);ctx.strokeStyle="rgba(255,255,255,.25)";ctx.lineWidth=3;ctx.beginPath();ctx.arc(970,90,350,0,Math.PI*2);ctx.stroke();ctx.fillStyle=text;ctx.font="800 26px system-ui";ctx.fillText(`INSTA NEWS STUDIO — ${String(slide.order).padStart(2,"0")}`,92,105);drawWrapped(ctx,slide.headline,92,365,880,86,4,text,"bold");drawWrapped(ctx,slide.body,92,735,850,38,4,text,"normal");ctx.globalAlpha=.7;ctx.font="500 22px system-ui";ctx.fillText(`出典：${source} ｜ 個人的な感想を含みます`,92,980);ctx.globalAlpha=1;ctx.fillStyle=text;ctx.fillRect(92,1012,280,14);
+  const [a,b,text]=palettes[slide.template]??palettes["theme-red"],layout=slide.layout??"standard";
+  const grad=ctx.createLinearGradient(0,0,1080,1080);grad.addColorStop(0,a);grad.addColorStop(1,b);ctx.fillStyle=grad;ctx.fillRect(0,0,1080,1080);
+  ctx.strokeStyle="rgba(255,255,255,.25)";ctx.lineWidth=3;ctx.beginPath();ctx.arc(970,90,350,0,Math.PI*2);ctx.stroke();
+  ctx.fillStyle=text;ctx.font="800 26px system-ui";ctx.fillText(`INSTA NEWS STUDIO — ${String(slide.order).padStart(2,"0")}`,92,105);
+  if(layout==="headline"){
+    ctx.globalAlpha=.18;ctx.fillRect(72,250,936,510);ctx.globalAlpha=1;drawWrapped(ctx,slide.headline,115,390,850,102,4,text,"bold");drawWrapped(ctx,slide.body,115,805,820,34,3,text,"normal");
+  }else if(layout==="quote"){
+    ctx.globalAlpha=.2;ctx.font="bold 260px Georgia";ctx.fillText("“",70,410);ctx.globalAlpha=1;drawWrapped(ctx,slide.headline,145,430,780,70,4,text,"bold");drawWrapped(ctx,slide.body,145,760,760,46,4,text,"normal");
+  }else if(layout==="minimal"){
+    ctx.fillRect(92,190,150,12);drawWrapped(ctx,slide.headline,92,310,880,74,4,text,"bold");drawWrapped(ctx,slide.body,92,690,760,36,5,text,"normal");
+  }else{
+    drawWrapped(ctx,slide.headline,92,365,880,86,4,text,"bold");drawWrapped(ctx,slide.body,92,735,850,38,4,text,"normal");
+  }
+  ctx.globalAlpha=.7;ctx.font="500 22px system-ui";ctx.fillText(`出典：${source} ｜ 個人的な感想を含みます`,92,980);ctx.globalAlpha=1;ctx.fillStyle=text;ctx.fillRect(92,1012,280,14);
 }
 function drawWrapped(ctx:CanvasRenderingContext2D,text:string,x:number,y:number,maxWidth:number,lineHeight:number,maxLines:number,color:string,weight:string){ctx.fillStyle=color;ctx.font=`${weight} ${lineHeight*.78}px system-ui`;const chars=[...text];let line="",row=0;for(let i=0;i<chars.length;i++){const test=line+chars[i];if(ctx.measureText(test).width>maxWidth||chars[i]==="\n"){ctx.fillText(line,x,y+row*lineHeight);line=chars[i]==="\n"?"":chars[i];row++;if(row>=maxLines-1){line+=chars.slice(i+1).join("");break;}}else line=test;}while(ctx.measureText(line).width>maxWidth&&line.length>1)line=line.slice(0,-2)+"…";ctx.fillText(line,x,y+row*lineHeight);}
 
