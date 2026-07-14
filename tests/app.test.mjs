@@ -5,6 +5,7 @@ import { createFavoriteCategory, createInitialFavoriteCategories, deleteFavorite
 import { composeCaption, createCaptionBlocks, polishCaptionBlocks, reorderCaptionBlocks, shortenCaptionBlocks } from "../src/lib/composer.ts";
 import { createManualNewsItem } from "../src/services/news/manual.ts";
 import { createArticleSearchUrl, getPreferredArticleUrl, isLikelyArticleUrl, normalizeNewsUrl, resolveArticleUrl } from "../src/services/news/url.ts";
+import { createGoogleNewsRssUrl, deduplicateRssNews, normalizeRssCategories, parseGoogleNewsRss } from "../src/services/news/rss.ts";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
@@ -119,4 +120,33 @@ test("画像と文章の直接編集UIを提供する",async()=>{
   for(const phrase of ["見つけた記事を登録する","タイトルで記事を探す","画像の文字と構成を編集","前へ移動","複製","文章構成エディター","読みやすく整える","短くまとめる"])assert.match(app,new RegExp(phrase));
   assert.match(app,/layout-headline|layout-/);
   assert.match(app,/captionBlocks/);
+});
+
+test("公開RSSを実ニュースへ変換し、除外・重複排除できる",()=>{
+  const category={id:"ai",name:"AI",keywords:["生成AI"],excludedKeywords:["広告"]};
+  const xml=`<?xml version="1.0"?><rss><channel>
+    <item><title>生成AIを教育へ活用 - 配信社</title><link>https://news.google.com/rss/articles/abc?utm_source=rss</link><pubDate>Wed, 15 Jul 2026 01:00:00 GMT</pubDate><source url="https://example.com/">配信社</source></item>
+    <item><title>広告のお知らせ - 配信社</title><link>https://news.google.com/rss/articles/ad</link><pubDate>Wed, 15 Jul 2026 00:00:00 GMT</pubDate><source url="https://example.com/">配信社</source></item>
+  </channel></rss>`;
+  const items=parseGoogleNewsRss(xml,category);
+  assert.equal(items.length,1);
+  assert.equal(items[0].title,"生成AIを教育へ活用");
+  assert.equal(items[0].sourceName,"配信社");
+  assert.equal(items[0].isArticleUrl,true);
+  assert.equal(isLikelyArticleUrl(items[0].articleUrl),true);
+  assert.equal(deduplicateRssNews([...items,{...items[0],id:"duplicate"}]).length,1);
+  assert.match(createGoogleNewsRssUrl(category),/^https:\/\/news\.google\.com\/rss\/search\?/);
+});
+
+test("RSSリクエストを制限し、不正な入力を除外する",()=>{
+  const categories=normalizeRssCategories([{id:"ai",name:" AI ",keywords:["生成AI",1],excludedKeywords:["広告"]},null,{name:""}]);
+  assert.deepEqual(categories,[{id:"ai",name:"AI",keywords:["生成AI"],excludedKeywords:["広告"]}]);
+  assert.deepEqual(normalizeRssCategories("invalid"),[]);
+});
+
+test("実ニュース取得UIとモックフォールバックを提供する",async()=>{
+  const [app,route]=await Promise.all([read("app/InstaNewsStudio.tsx"),read("app/api/news/route.ts")]);
+  for(const phrase of ["実ニュース","最新ニュースを取得","公開RSS","モックニュースを表示中","生成AI・AI APIは使用していません"])assert.match(app,new RegExp(phrase));
+  assert.match(route,/Google News RSS/);
+  assert.match(route,/status:502/);
 });

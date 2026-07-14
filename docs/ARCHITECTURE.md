@@ -4,7 +4,8 @@ UIはNext.js App Router上のクライアントアプリとして動作し、Clo
 
 ```text
 UI → Post生成ルール → PostDraft / PostSlide
-UI → NewsProvider → Mock / Manual / RSS（将来接続）
+UI → POST /api/news → RssNewsProvider / Google News RSS
+UI → NewsProvider → RSS / Manual / Mock（RSS失敗時の予備）
 UI → FavoriteCategory → 並び順 / 表示 / キーワード / 利用履歴
 NewsProvider → URL正規化 → 記事判定 → 記事URL優先
 UI → ManualNews → 記事URL検証 → localStorage
@@ -14,3 +15,5 @@ UI → Storage Adapter（現在localStorage、将来D1/R2）
 ```
 
 AI接続時はサーバールートを追加し、APIキーをサーバーだけで参照する。入力は見出し、要約、出典、コメント、スタイル、文体に限定し、構造化JSONをZodで検証して失敗時は現在の固定ルールへフォールバックする。
+
+RSS APIはクライアントから任意URLを受け取らず、最大8ジャンルの表示名・検索語・除外語だけを受け取る。サーバーがGoogle News RSS URLを組み立て、最大10件へ重複排除する。成功結果は端末にも保存し、通信障害時に継続利用する。

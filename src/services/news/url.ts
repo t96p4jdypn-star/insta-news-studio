@@ -22,6 +22,7 @@ export function isLikelyArticleUrl(value:string|undefined|null):boolean {
   const normalized=normalizeNewsUrl(value); if(!normalized)return false;
   const url=new URL(normalized); const segments=url.pathname.split("/").filter(Boolean).map(x=>x.toLowerCase());
   if(!segments.length)return false;
+  if(url.hostname==="news.google.com"&&segments[0]==="rss"&&segments[1]==="articles")return true;
   const path=segments.join("/");
   if(/(^|\/)(rss|feed)(\/|$)/.test(path)||/\.(rss|xml)$/.test(path))return false;
   const listingRoots=new Set(["search","category","categories","topic","topics","news","articles","index.html","home"]);

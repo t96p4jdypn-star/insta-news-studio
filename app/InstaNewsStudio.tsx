@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { mockNews } from "../src/services/news/MockNewsProvider";
 import type { NewsItem } from "../src/services/news/NewsProvider";
 import { generateDraft, slideLayouts, styles, suggestStyle, suggestTheme, themes, tones, type InterestProfile, type PostDraft, type PostSlide, type SlideLayout } from "../src/lib/models";
@@ -14,6 +14,9 @@ const PROFILE_KEY = "insta-news-studio-profile-v1";
 const DRAFT_KEY = "insta-news-studio-drafts-v1";
 const SAVED_KEY = "insta-news-studio-saved-v1";
 const MANUAL_NEWS_KEY = "insta-news-studio-manual-news-v1";
+const LIVE_NEWS_KEY = "insta-news-studio-live-news-v1";
+type NewsMode="loading"|"rss"|"mock";
+type LiveNewsCache={items:NewsItem[];fetchedAt:string};
 const initialFavoriteCategories=createInitialFavoriteCategories();
 const defaultProfile: InterestProfile = { purpose:"両方", categories:initialFavoriteCategories.map(category=>category.displayName), keywords:Object.fromEntries(initialFavoriteCategories.map(category=>[category.displayName,category.searchKeywords])), excludedKeywords:["芸能ゴシップ","グッズ情報","単なる試合結果"], preferredStyles:["私の考え","ニュース解説"], favoriteCategories:initialFavoriteCategories };
 const categoryColors: Record<string,string> = {"広島東洋カープ":"#b72b25","プロ野球":"#bd5436","女子プロレス":"#80418e","女子駅伝":"#2672a0","女子バスケットボール":"#bc6034","ラグビー":"#377c55","サッカー":"#328278","AI":"#334963","アプリ開発":"#536477","教育":"#36578a"};
@@ -39,6 +42,10 @@ export default function InstaNewsStudio() {
   const [activeDraft,setActiveDraft]=useState<PostDraft|null>(null);
   const [toast,setToast]=useState("");
   const [query,setQuery]=useState("");
+  const [newsMode,setNewsMode]=useState<NewsMode>("loading");
+  const [newsLoading,setNewsLoading]=useState(false);
+  const [newsUpdatedAt,setNewsUpdatedAt]=useState("");
+  const didAutoRefresh=useRef(false);
 
   /* eslint-disable react-hooks/set-state-in-effect -- Device-local data is available only after client mount. */
   useEffect(()=>{
@@ -49,7 +56,11 @@ export default function InstaNewsStudio() {
     setShowOnboarding(!storedProfile);
     setDrafts(safeParse<PostDraft[]>(localStorage.getItem(DRAFT_KEY),[]).map(draft=>({...draft,news:normalizeNewsItem(draft.news),slides:draft.slides.map(slide=>({...slide,layout:slide.layout??"standard"}))})));
     const manualNews=safeParse<NewsItem[]>(localStorage.getItem(MANUAL_NEWS_KEY),[]).map(normalizeNewsItem);
-    setNewsItems([...manualNews,...mockNews.map(normalizeNewsItem).filter(mock=>!manualNews.some(item=>item.id===mock.id))]);
+    const liveCache=safeParse<LiveNewsCache|null>(localStorage.getItem(LIVE_NEWS_KEY),null);
+    const cachedItems=liveCache?.items?.map(normalizeNewsItem)??[];
+    setNewsItems([...manualNews,...(cachedItems.length?cachedItems:mockNews.map(normalizeNewsItem)).filter(item=>!manualNews.some(manual=>manual.id===item.id))]);
+    setNewsMode(cachedItems.length?"rss":"mock");
+    setNewsUpdatedAt(liveCache?.fetchedAt??"");
     setSaved(safeParse<string[]>(localStorage.getItem(SAVED_KEY),[]));
     setReady(true);
     if("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(()=>undefined);
@@ -58,6 +69,30 @@ export default function InstaNewsStudio() {
   useEffect(()=>{ if(!ready)return; localStorage.setItem(DRAFT_KEY,JSON.stringify(drafts)); },[drafts,ready]);
   useEffect(()=>{ if(!ready)return; localStorage.setItem(SAVED_KEY,JSON.stringify(saved)); },[saved,ready]);
   useEffect(()=>{ if(!toast)return; const id=setTimeout(()=>setToast(""),2600); return()=>clearTimeout(id); },[toast]);
+
+  const refreshLiveNews=useCallback(async(showResult=true)=>{
+    setNewsLoading(true);
+    try{
+      const categories=profile.favoriteCategories.filter(category=>category.isVisible).sort((a,b)=>a.order-b.order).slice(0,8).map(category=>({id:category.id,name:category.displayName,keywords:category.searchKeywords,excludedKeywords:[...profile.excludedKeywords,...category.excludedKeywords]}));
+      const response=await fetch("/api/news",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({categories})});
+      const result=await response.json() as {items?:NewsItem[];fetchedAt?:string;error?:string};
+      if(!response.ok||!result.items?.length)throw new Error(result.error||"ニュースを取得できませんでした");
+      const items=result.items.map(normalizeNewsItem),fetchedAt=result.fetchedAt??new Date().toISOString();
+      localStorage.setItem(LIVE_NEWS_KEY,JSON.stringify({items,fetchedAt} satisfies LiveNewsCache));
+      const manual=safeParse<NewsItem[]>(localStorage.getItem(MANUAL_NEWS_KEY),[]).map(normalizeNewsItem);
+      setNewsItems([...manual,...items.filter(item=>!manual.some(entry=>entry.id===item.id))]);setNewsMode("rss");setNewsUpdatedAt(fetchedAt);
+      if(showResult)setToast(`${items.length}件の最新ニュースを取得しました`);
+    }catch{
+      const cache=safeParse<LiveNewsCache|null>(localStorage.getItem(LIVE_NEWS_KEY),null);
+      if(!cache?.items?.length){
+        const manual=safeParse<NewsItem[]>(localStorage.getItem(MANUAL_NEWS_KEY),[]).map(normalizeNewsItem);
+        setNewsItems([...manual,...mockNews.map(normalizeNewsItem).filter(item=>!manual.some(entry=>entry.id===item.id))]);setNewsMode("mock");
+      }
+      if(showResult)setToast(cache?.items?.length?"通信できないため保存済みニュースを表示します":"通信できないためモックニュースを表示します");
+    }finally{setNewsLoading(false);}
+  },[profile.excludedKeywords,profile.favoriteCategories]);
+
+  useEffect(()=>{if(ready&&!didAutoRefresh.current){didAutoRefresh.current=true;void refreshLiveNews(false);}},[ready,refreshLiveNews]);
 
   const persistProfile=(next:InterestProfile)=>{setProfile(next);localStorage.setItem(PROFILE_KEY,JSON.stringify(next));};
   const openEditor=(news:NewsItem)=>{ const normalized=normalizeNewsItem(news); setSelectedNews(normalized); setActiveDraft(null); setView("editor"); const next=syncProfileCategories(profile,recordCategoryUsage(profile.favoriteCategories,normalized.category));persistProfile(next); window.scrollTo({top:0}); };
@@ -74,7 +109,7 @@ export default function InstaNewsStudio() {
       <button className="brand ghost" onClick={()=>nav("home")} aria-label="ホームへ">
         <span className="brand-mark">N</span><span>Insta News Studio<small>ニュースから今日の投稿をつくる</small></span>
       </button>
-      <span className="mode-pill">● モックモード</span>
+      <span className={`mode-pill ${newsMode==="rss"?"live":""}`}>● {newsMode==="rss"?"実ニュース":newsMode==="loading"?"確認中":"モック予備"}</span>
     </header>
     <div className="workspace">
       <aside className="sidebar" aria-label="メインメニュー">
@@ -90,12 +125,12 @@ export default function InstaNewsStudio() {
         <div className="sidebar-tip"><strong>1日1本を、気軽に。</strong>今日使えそうな候補が{visibleNews.length}件あります。焦らず、自分の言葉をひとつ足しましょう。</div>
       </aside>
       <main className="main">
-        {view==="home"&&<Home news={visibleNews} filter={filter} setFilter={setFilter} saved={saved} openEditor={openEditor} saveForLater={saveForLater} setNewsItems={setNewsItems} drafts={drafts} categories={profile.favoriteCategories} onAddNews={addManualNews} onAddRecommendation={id=>{const next=syncProfileCategories(profile,profile.favoriteCategories.map(category=>category.id===id?{...category,initiallyVisible:true,isVisible:true}:category));persistProfile(next);setToast("おすすめジャンルへ追加しました");}} onToast={setToast}/>}
+        {view==="home"&&<Home news={visibleNews} filter={filter} setFilter={setFilter} saved={saved} openEditor={openEditor} saveForLater={saveForLater} setNewsItems={setNewsItems} drafts={drafts} categories={profile.favoriteCategories} onAddNews={addManualNews} newsMode={newsMode} newsLoading={newsLoading} newsUpdatedAt={newsUpdatedAt} onRefresh={()=>void refreshLiveNews(true)} onAddRecommendation={id=>{const next=syncProfileCategories(profile,profile.favoriteCategories.map(category=>category.id===id?{...category,initiallyVisible:true,isVisible:true}:category));persistProfile(next);setToast("おすすめジャンルへ追加しました");}} onToast={setToast}/>}
         {view==="editor"&&<Editor key={`${selectedNews?.id??activeDraft?.news.id??"default"}-${activeDraft?.id??"new"}`} news={selectedNews ?? activeDraft?.news ?? mockNews[0]} existing={activeDraft} onSave={updateDraft} onToast={setToast}/>}
         {view==="stock"&&<Stock drafts={drafts} onOpen={d=>{setActiveDraft(d);setSelectedNews(d.news);nav("editor");}} onStatus={d=>updateDraft(d)} emptyAction={()=>openEditor(mockNews[0])}/>}
         {view==="calendar"&&<Calendar drafts={drafts}/>}
         {view==="search"&&<Search drafts={searchResults} query={query} setQuery={setQuery} onOpen={d=>{setActiveDraft(d);setSelectedNews(d.news);nav("editor");}}/>}
-        {view==="settings"&&<Settings profile={profile} setProfile={persistProfile} onOnboarding={()=>setShowOnboarding(true)} onToast={setToast}/>}
+        {view==="settings"&&<Settings profile={profile} setProfile={persistProfile} newsMode={newsMode} newsUpdatedAt={newsUpdatedAt} onOnboarding={()=>setShowOnboarding(true)} onToast={setToast}/>}
         {view==="guide"&&<Guide/>}
       </main>
     </div>
@@ -125,12 +160,13 @@ function NewsLinks({news,onToast}:{news:NewsItem;onToast:(message:string)=>void}
   </div>;
 }
 
-function Home({news,filter,setFilter,saved,openEditor,saveForLater,setNewsItems,drafts,categories,onAddNews,onAddRecommendation,onToast}:{news:NewsItem[];filter:string;setFilter:(s:string)=>void;saved:string[];openEditor:(n:NewsItem)=>void;saveForLater:(id:string)=>void;setNewsItems:React.Dispatch<React.SetStateAction<NewsItem[]>>;drafts:PostDraft[];categories:FavoriteCategory[];onAddNews:(news:NewsItem)=>void;onAddRecommendation:(id:string)=>void;onToast:(s:string)=>void}) {
+function Home({news,filter,setFilter,saved,openEditor,saveForLater,setNewsItems,drafts,categories,onAddNews,newsMode,newsLoading,newsUpdatedAt,onRefresh,onAddRecommendation,onToast}:{news:NewsItem[];filter:string;setFilter:(s:string)=>void;saved:string[];openEditor:(n:NewsItem)=>void;saveForLater:(id:string)=>void;setNewsItems:React.Dispatch<React.SetStateAction<NewsItem[]>>;drafts:PostDraft[];categories:FavoriteCategory[];onAddNews:(news:NewsItem)=>void;newsMode:NewsMode;newsLoading:boolean;newsUpdatedAt:string;onRefresh:()=>void;onAddRecommendation:(id:string)=>void;onToast:(s:string)=>void}) {
   const filters=categories.filter(category=>category.isVisible&&category.initiallyVisible).sort((a,b)=>a.order-b.order);
   const frequent=categories.filter(category=>isFrequentCategory(category)&&!category.initiallyVisible);
   const today=new Date().toLocaleDateString("ja-JP",{month:"long",day:"numeric",weekday:"long"});
   return <>
     <section className="hero"><div><span className="eyebrow">{today}</span><h1>今日のおすすめ</h1><p>あなたの興味に合わせて、投稿につながりそうなニュースを選びました。</p></div><button className="primary" onClick={()=>openEditor(news[0]??mockNews[0])}>＋ 投稿をつくる</button></section>
+    <section className={`news-sync ${newsMode==="rss"?"live":"fallback"}`} aria-live="polite"><div><strong>{newsMode==="rss"?"実ニュースを表示中":"モックニュースを表示中"}</strong><p>{newsMode==="rss"?(newsUpdatedAt?`${formatDate(newsUpdatedAt)}に公開RSSから更新しました。本文や写真は保存しません。`:"公開RSSから取得しています。"):`RSSに接続できない場合も、投稿作成はそのまま利用できます。`}</p></div><button className="secondary" onClick={onRefresh} disabled={newsLoading}>{newsLoading?"取得中…":"最新ニュースを取得"}</button></section>
     <div className="stats"><div className="stat"><strong>{news.length}</strong><span>おすすめ候補</span></div><div className="stat"><strong>{saved.length}</strong><span>あとで読む</span></div><div className="stat"><strong>{drafts.filter(d=>d.status!=="投稿済み").length}</strong><span>作成途中</span></div><div className="stat"><strong>{drafts.filter(d=>d.status==="投稿済み").length}</strong><span>投稿済み</span></div></div>
     {news.filter(n=>n.category.includes("カープ")).length>=3&&<div className="status-note">最近カープの候補が多めです。女子プロレスやAIの候補も表示しています。</div>}
     {frequent.length>0&&<div className="frequent-note"><div><strong>最近よく利用しています</strong><p>{frequent.map(category=>`${category.icon} ${category.displayName}（${category.usageCount}回）`).join("、")}</p></div>{frequent.map(category=><button className="secondary" key={category.id} onClick={()=>onAddRecommendation(category.id)}>おすすめへ追加</button>)}</div>}
@@ -239,14 +275,14 @@ function Search({drafts,query,setQuery,onOpen}:{drafts:PostDraft[];query:string;
 
 function Guide(){const steps=["Instagramを開く","画面下または上部の「＋」を押す","「投稿」を選ぶ","保存した画像を選ぶ","複数画像なら「複数選択」を押す","「次へ」を押す","キャプション欄を長押しする","「貼り付け」を押す","名前・数字・出典を確認する","最後に「シェア」を押す"];return <><section className="hero"><div><span className="eyebrow">BEGINNER GUIDE</span><h1>Instagramへの投稿手順</h1><p>最後の「シェア」は、内容を確認してからご自身で押してください。</p></div></section><div className="editor-layout"><div className="panel"><h2>画像と本文を用意する</h2><ol style={{paddingLeft:24,lineHeight:2.2}}>{steps.map((s,i)=><li key={s}><strong>{s}</strong>{i===3&&<small style={{display:"block",color:"#737b75"}}>画像は通常「写真」または「最近の項目」にあります。</small>}</li>)}</ol></div><div className="panel"><h2>投稿前チェック</h2>{["画像は正しい","名前や数字は正しい","誤字がない","ニュース出典を確認した","投稿して問題ない"].map(x=><label key={x} style={{display:"flex",gap:10,alignItems:"center",minHeight:48,borderBottom:"1px solid #ecece6"}}><input type="checkbox"/> {x}</label>)}<div className="status-note" style={{marginTop:20}}>ニュース写真や記事本文は転用せず、このアプリで作った文字・図形中心の画像を使います。</div><a className="primary" style={{width:"100%",textDecoration:"none"}} href="https://www.instagram.com/" target="_blank" rel="noreferrer">Instagramを開く ↗</a></div></div></>;}
 
-function Settings({profile,setProfile,onOnboarding,onToast}:{profile:InterestProfile;setProfile:(p:InterestProfile)=>void;onOnboarding:()=>void;onToast:(s:string)=>void}) {
+function Settings({profile,setProfile,newsMode,newsUpdatedAt,onOnboarding,onToast}:{profile:InterestProfile;setProfile:(p:InterestProfile)=>void;newsMode:NewsMode;newsUpdatedAt:string;onOnboarding:()=>void;onToast:(s:string)=>void}) {
   const [excluded,setExcluded]=useState(profile.excludedKeywords.join("、"));
   const exportData=()=>{const blob=new Blob([JSON.stringify({profile,drafts:safeParse(localStorage.getItem(DRAFT_KEY),[])},null,2)],{type:"application/json"});const a=document.createElement("a");a.download="insta-news-studio-export.json";a.href=URL.createObjectURL(blob);a.click();URL.revokeObjectURL(a.href);onToast("データを書き出しました");};
   const updateCategories=(next:FavoriteCategory[])=>setProfile(syncProfileCategories(profile,next));
   return <><section className="hero"><div><span className="eyebrow">PREFERENCES</span><h1>設定</h1><p>興味、文体、データ、接続状況を管理します。</p></div></section><div className="settings-grid">
     <div className="setting-card category-manager-card"><CategoryManager categories={profile.favoriteCategories} onChange={updateCategories} onToast={onToast}/></div>
     <div className="setting-card"><h3>全体の除外キーワード</h3><p>全ジャンルで候補に出したくない内容を「、」で区切ります。</p><input className="search-input" value={excluded} onChange={e=>setExcluded(e.target.value)}/><button className="primary" style={{marginTop:9}} onClick={()=>{setProfile({...profile,excludedKeywords:excluded.split("、").map(x=>x.trim()).filter(Boolean)});onToast("除外キーワードを保存しました");}}>保存</button></div>
-    <div className="setting-card"><h3>API接続状況</h3><p><strong style={{color:"#a84b28"}}>モックモード</strong><br/>ニュースAPI・AI APIは未接続です。すべての主要機能は固定ルールで動作します。</p></div><div className="setting-card"><h3>データのエクスポート</h3><p>興味設定、ジャンル管理、利用回数、投稿素材をJSON形式で保存します。</p><button className="secondary" onClick={exportData}>データを書き出す</button></div><div className="setting-card"><h3>画像利用のルール</h3><p>アップロードする画像は、自分で撮影したもの、または使用許可を得たものに限ります。</p><label style={{fontSize:11}}><input type="checkbox"/> この画像利用ルールを確認しました</label></div><div className="setting-card"><h3>初心者向け案内</h3><p>初回設定やInstagram投稿手順はいつでも再表示できます。</p><button className="secondary" onClick={onOnboarding}>初回案内を表示</button></div>
+    <div className="setting-card"><h3>ニュース接続状況</h3><p><strong style={{color:newsMode==="rss"?"#26724c":"#a84b28"}}>{newsMode==="rss"?"実ニュースモード":"モック予備モード"}</strong><br/>{newsMode==="rss"?`Google News RSSから見出し・配信元・日時・記事リンクを取得しています。${newsUpdatedAt?` 最終更新：${formatDate(newsUpdatedAt)}`:""}`:"RSS取得に失敗したため、端末内のモックを表示しています。再取得できます。"}<br/>生成AI・AI APIは使用していません。</p></div><div className="setting-card"><h3>データのエクスポート</h3><p>興味設定、ジャンル管理、利用回数、投稿素材をJSON形式で保存します。</p><button className="secondary" onClick={exportData}>データを書き出す</button></div><div className="setting-card"><h3>画像利用のルール</h3><p>アップロードする画像は、自分で撮影したもの、または使用許可を得たものに限ります。</p><label style={{fontSize:11}}><input type="checkbox"/> この画像利用ルールを確認しました</label></div><div className="setting-card"><h3>初心者向け案内</h3><p>初回設定やInstagram投稿手順はいつでも再表示できます。</p><button className="secondary" onClick={onOnboarding}>初回案内を表示</button></div>
   </div></>;
 }
 
